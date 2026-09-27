@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dart in the browser · LiveCodes PoC</title>
+<style>
+  :root {
+    --bg: #14141a;
+    --panel: #1c1c24;
+    --border: #2c2c38;
+    --text: #e8e8ef;
+    --muted: #8f8fa3;
+    --accent: #17b6c4;
+    --accent-dim: #0f7c86;
+    --error: #ff6b6b;
+    --warn: #f0c674;
+    --ok: #7bd88f;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  header h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+  }
+
+  header .tag {
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+
+  header .spacer { flex: 1; }
+
+  button {
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #262631;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  button:hover:not(:disabled) { background: #30303d; }
+
+  button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  button.primary {
+    border-color: var(--accent-dim);
+    background: var(--accent-dim);
+    color: #04191c;
+    font-weight: 600;
+  }
+
+  button.primary:hover:not(:disabled) { background: var(--accent); }
+
+  #status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  #status::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  #status[data-state="busy"] { color: var(--warn); }
+  #status[data-state="ok"] { color: var(--ok); }
+  #status[data-state="error"] { color: var(--error); }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1px;
+    min-height: 0;
+    background: var(--border);
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--bg);
+  }
+
+  .pane > h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 6px 10px 6px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+
+  .pane > h2 .meta {
+    margin-left: auto;
+    padding-right: 4px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .tabs { display: flex; gap: 3px; }
+
+  .tab {
+    padding: 4px 9px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    cursor: pointer;
+  }
+
+  .tab:hover { color: var(--text); }
+
+  .tab[aria-selected="true"] {
+    border-color: var(--border);
+    background: #262631;
+    color: var(--text);
+  }
+
+  textarea {
+    flex: 1;
+    width: 100%;
+    padding: 14px;
+    border: 0;
+    outline: none;
+    resize: none;
+    background: transparent;
+    color: var(--text);
+    font: 13px/1.6 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+    tab-size: 2;
+  }
+
+  .view {
+    flex: 1;
+    margin: 0;
+    padding: 12px 14px;
+    overflow: auto;
+    font: 12px/1.6 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .view[hidden] { display: none; }
+
+  #output .log { color: var(--text); }
+  #output .info { color: var(--muted); }
+  #output .warn { color: var(--warn); }
+  #output .error { color: var(--error); }
+  #output .divider {
+    color: var(--accent);
+    border-top: 1px solid var(--border);
+    margin-top: 10px;
+    padding-top: 8px;
+  }
+
+  #output:empty::before {
+    content: "Press Run to compile and execute the Dart code above.";
+    color: var(--muted);
+  }
+
+  #compiled, #sourcemap { color: #b9c8d4; }
+
+  .empty {
+    color: var(--muted);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+
+  .sandbox {
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  .sandbox iframe {
+    display: block;
+    width: 100%;
+    height: 120px;
+    border: 0;
+    border-top: 1px solid var(--border);
+    background: #fff;
+  }
+
+  @media (max-width: 760px) {
+    main { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Dart in the browser</h1>
+    <span class="tag">LiveCodes PoC</span>
+    <span class="spacer"></span>
+    <span id="status" data-state="idle">Not started</span>
+    <button id="clear">Clear</button>
+    <button id="run" class="primary">Run ▸</button>
+  </header>
+
+  <main>
+    <section class="pane">
+      <h2>main.dart</h2>
+      <textarea id="editor" spellcheck="false"></textarea>
+    </section>
+    <section class="pane">
+      <h2>
+        <span class="tabs" role="tablist">
+          <button class="tab" role="tab" data-view="output" aria-selected="true">Console</button>
+          <button class="tab" role="tab" data-view="compiled" aria-selected="false">Compiled JS</button>
+          <button class="tab" role="tab" data-view="sourcemap" aria-selected="false">Source map</button>
+        </span>
+        <span class="meta" id="meta"></span>
+      </h2>
+      <pre class="view" id="output"></pre>
+      <pre class="view" id="compiled" hidden></pre>
+      <pre class="view" id="sourcemap" hidden></pre>
+    </section>
+  </main>
+
+  <section class="sandbox pane">
+    <h2>Sandbox iframe <span>DDC-compiled modules execute here</span></h2>
+  </section>
+
+  <script type="module">
+    import { DartPad, SANDBOX_NOTIFICATIONS } from './dartpad-client.js';
+
+    const INITIAL_CODE = `void main() {
+  print('Hello from Dart, in the browser. 🎯');
+
+  final fibonacci = <int>[0, 1];
+  while (fibonacci.length < 10) {
+    fibonacci.add(fibonacci[fibonacci.length - 1] + fibonacci[fibonacci.length - 2]);
+  }
+  print('Fibonacci: $fibonacci');
+
+  final squares = {for (var i = 1; i <= 5; i++) i: i * i};
+  for (final entry in squares.entries) {
+    print('\${entry.key}² = \${entry.value}');
+  }
+}
+`;
+
+    const editor = document.querySelector('#editor');
+    const output = document.querySelector('#output');
+    const compiled = document.querySelector('#compiled');
+    const sourcemap = document.querySelector('#sourcemap');
+    const meta = document.querySelector('#meta');
+    const runButton = document.querySelector('#run');
+    const clearButton = document.querySelector('#clear');
+    const status = document.querySelector('#status');
+    const sandboxContainer = document.querySelector('.sandbox');
+    const tabs = [...document.querySelectorAll('.tab')];
+
+    let dartpad = null;
+    let projectReady = false;
+    let modules = [];
+
+    editor.value = INITIAL_CODE;
+
+    function setStatus(text, state = 'idle') {
+      status.textContent = text;
+      status.dataset.state = state;
+    }
+
+    function appendOutput(kind, text) {
+      if (!text) return;
+      const line = document.createElement('div');
+      line.className = kind;
+      line.textContent = text;
+      output.append(line);
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function showView(name) {
+      for (const tab of tabs) {
+        const selected = tab.dataset.view === name;
+        tab.setAttribute('aria-selected', String(selected));
+      }
+      output.hidden = name !== 'output';
+      compiled.hidden = name !== 'compiled';
+      sourcemap.hidden = name !== 'sourcemap';
+    }
+
+    const formatBytes = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
+
+    /**
+     * DDC's `ddcLibraryBundle` format registers its source map in a trailing
+     * `dartDevEmbedder.debugger.setSourceMap("<module>", <map-or-null>)` call.
+     *
+     * Note: the published dartpad 0.0.6 assets always pass `null` here -
+     * source map generation was only wired up on Dart SDK `main` on
+     * 2026-09-15, after that release was cut.
+     */
+    function extractSourceMap(code) {
+      const call = /setSourceMap\(\s*"(?:[^"\\]|\\.)*"\s*,\s*("(?:[^"\\]|\\.)*"|null)\s*\)/.exec(code);
+      if (!call || call[1] === 'null') return null;
+      try {
+        return JSON.parse(JSON.parse(call[1]));
+      } catch {
+        return null;
+      }
+    }
+
+    function renderModules() {
+      if (!modules.length) {
+        compiled.innerHTML = '<span class="empty">Run some Dart to see the JavaScript DDC emits.</span>';
+        sourcemap.innerHTML = '<span class="empty">No source map yet.</span>';
+        meta.textContent = '';
+        return;
+      }
+
+      compiled.textContent = modules.join('\n\n/* ─────────── next module ─────────── */\n\n');
+      compiled.scrollTop = 0;
+
+      const code = modules[modules.length - 1];
+      const map = extractSourceMap(code);
+      const name = new URL(map?.file ?? map?.sources?.[0] ?? '', 'file:///').pathname.split('/').pop();
+
+      if (map) {
+        sourcemap.textContent = JSON.stringify(map, null, 2);
+        sourcemap.scrollTop = 0;
+      } else {
+        sourcemap.innerHTML =
+          '<span class="empty">This module carries no inline source map.<br><br>' +
+          'DDC emitted <code>setSourceMap("main", null)</code> with <code>sourceMapSize: 4</code> ' +
+          '(the 4 bytes of the string <code>null</code>). Source map generation was wired up on ' +
+          'Dart SDK <code>main</code> on 2026-09-15, after the published dartpad 0.0.6 assets were built.</span>';
+      }
+
+      const sourceCount = map?.sources?.length ?? 0;
+      meta.textContent = map
+        ? `${modules.length} module${modules.length === 1 ? '' : 's'} · ${formatBytes(code.length)} · inline map for ${sourceCount} source${sourceCount === 1 ? '' : 's'}${name ? ` (${name})` : ''}`
+        : `${modules.length} module${modules.length === 1 ? '' : 's'} · ${formatBytes(code.length)} · no source map`;
+    }
+
+    function handleModule(code) {
+      modules.push(code);
+      renderModules();
+    }
+
+    function handleNotification(method, params) {
+      switch (method) {
+        case SANDBOX_NOTIFICATIONS.console:
+          appendOutput(params?.level === 'error' ? 'error' : 'log', params?.message);
+          break;
+        case SANDBOX_NOTIFICATIONS.error:
+        case SANDBOX_NOTIFICATIONS.unhandledRejection:
+          appendOutput('error', params?.message);
+          break;
+      }
+    }
+
+    async function boot() {
+      setStatus('Downloading Dart toolchain…', 'busy');
+      const pad = await DartPad.create({
+        container: sandboxContainer,
+        onNotification: handleNotification,
+        onModule: handleModule,
+      });
+      setStatus('Ready', 'ok');
+      return pad;
+    }
+
+    async function ensureProject(pad) {
+      if (projectReady) return;
+
+      await pad.writeFile(
+        'pubspec.yaml',
+        ['name: dartpad_poc', 'environment:', "  sdk: '>=3.0.0 <4.0.0'", ''].join('\n'),
+      );
+
+      setStatus('Resolving packages…', 'busy');
+      try {
+        const { log } = await pad.pub('get');
+        if (log?.trim()) appendOutput('info', log.trim());
+      } catch (error) {
+        appendOutput('warn', `pub get failed (continuing): ${error.message}`);
+      }
+      projectReady = true;
+    }
+
+    async function run() {
+      runButton.disabled = true;
+      try {
+        dartpad ??= await boot();
+        await ensureProject(dartpad);
+
+        await dartpad.writeFile('main.dart', editor.value);
+
+        modules = [];
+        renderModules();
+        appendOutput('divider', `Run · ${new Date().toLocaleTimeString()}`);
+        setStatus('Compiling…', 'busy');
+
+        const { log } = await dartpad.run('main.dart', 'console');
+        if (log?.trim()) appendOutput('info', log.trim());
+
+        setStatus('Ready', 'ok');
+      } catch (error) {
+        appendOutput('error', error?.message ?? String(error));
+        setStatus('Error', 'error');
+      } finally {
+        runButton.disabled = false;
+      }
+    }
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => showView(tab.dataset.view));
+    }
+
+    runButton.addEventListener('click', run);
+    clearButton.addEventListener('click', () => { output.textContent = ''; });
+
+    editor.addEventListener('keydown', (event) => {
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        const { selectionStart, selectionEnd, value } = editor;
+        editor.value = `${value.slice(0, selectionStart)}  ${value.slice(selectionEnd)}`;
+        editor.selectionStart = editor.selectionEnd = selectionStart + 2;
+      } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        run();
+      }
+    });
+
+    renderModules();
+  </script>
+</body>
+</html>
