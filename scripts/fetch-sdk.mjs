@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Vendors the DartPad SDK browser assets into `public/dart/`.
+ * Vendors the DartPad SDK browser assets used by this project.
  *
- * The Dart team publishes a fully client-side Dart toolchain inside the
- * `dartpad` pub package: `web/dart/` holds a dart2wasm Web Worker containing
- * the Dart Development Compiler (DDC), the analyzer, an in-memory file system
- * and a subset of `dart pub`, plus `sandbox.js` for executing the compiled
- * output. Those files are static assets, so they are copied here verbatim and
- * served from our own origin.
+ * The Dart team publishes a fully client-side toolchain inside the `dartpad`
+ * pub package. `web/dart/` is a Dart-only environment; `web/flutter/` is the
+ * same worker plus a precompiled Flutter framework. Both are static assets, so
+ * they are copied here verbatim and served from our own origin.
  *
- *   node scripts/fetch-sdk.mjs           # download if missing, then extract
- *   node scripts/fetch-sdk.mjs --force   # ignore the cached archive
+ *   node scripts/fetch-sdk.mjs                        # dart only (default)
+ *   node scripts/fetch-sdk.mjs --variant flutter
+ *   node scripts/fetch-sdk.mjs --variant all
+ *   node scripts/fetch-sdk.mjs --variant flutter --force
  *
  * Requires `tar` on PATH (bundled with Windows 10+, macOS and Linux).
  *
@@ -20,7 +20,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,39 +28,73 @@ import { fileURLToPath } from 'node:url';
 const DARTPAD_VERSION = '0.0.9';
 const DARTPAD_SHA256 = '3ac8de047c0c6b82ff63bc67f2fff2f579d6e4b6218028392b75b982a10c672f';
 
-/** `web/dart/` entries this project depends on. */
-const ASSETS = [
-  'dart_sdk.js',
-  // Referenced by a `//# sourceMappingURL=` comment at the end of dart_sdk.js,
-  // so the browser fetches it when devtools is open.
-  'dart_sdk.js.map',
-  // Installed by sandbox.js as `$dartStackTraceUtility`; maps JS frames in
-  // uncaught errors back to Dart source locations (dartpad >= 0.0.7).
-  'dart_stack_trace_mapper.js',
-  'ddc_module_loader.js',
-  'sandbox.js',
-  'sdk.tar',
-  'worker.js',
-  'worker.mjs',
-  'worker.support.js',
-  'worker.wasm',
-];
+/**
+ * Both variants ship the same worker and DDC runtime. Flutter additionally
+ * ships `flutter_web.js`, the precompiled framework (~123 MB), plus fonts and
+ * shaders under `assets/`.
+ */
+const VARIANTS = {
+  dart: {
+    source: 'web/dart',
+    destination: 'public/dart',
+    required: [
+      'dart_sdk.js',
+      'dart_sdk.js.map',
+      'dart_stack_trace_mapper.js',
+      'ddc_module_loader.js',
+      'sandbox.js',
+      'sdk.tar',
+      'worker.js',
+      'worker.mjs',
+      'worker.support.js',
+      'worker.wasm',
+    ],
+  },
+  flutter: {
+    source: 'web/flutter',
+    destination: 'public/flutter',
+    required: [
+      'dart_sdk.js',
+      'dart_sdk.js.map',
+      'dart_stack_trace_mapper.js',
+      'ddc_module_loader.js',
+      'flutter.js',
+      'flutter_web.js',
+      'flutter_web.js.map',
+      'sandbox.js',
+      'sdk.tar',
+      'worker.js',
+      'worker.mjs',
+      'worker.support.js',
+      'worker.wasm',
+    ],
+  },
+};
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const destination = join(root, 'public', 'dart');
-const force = process.argv.includes('--force');
+const args = process.argv.slice(2);
+const force = args.includes('--force');
+
+const variantFlag = args.find((arg) => arg.startsWith('--variant'));
+const requested =
+  args[args.indexOf('--variant') + 1] ?? variantFlag?.split('=')[1] ?? 'dart';
+
+if (requested !== 'all' && !VARIANTS[requested]) {
+  console.error(`Unknown --variant "${requested}". Use: dart, flutter or all.`);
+  process.exit(1);
+}
+
+const selected = requested === 'all' ? Object.keys(VARIANTS) : [requested];
 
 const archiveName = `dartpad-${DARTPAD_VERSION}.tar.gz`;
 const archiveUrl = `https://pub.dev/api/archives/${archiveName}`;
 const cachedArchive = join(tmpdir(), archiveName);
 
-function sha256(bytes) {
-  return createHash('sha256').update(bytes).digest('hex');
-}
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-function run(command, args) {
+function run(command, commandArgs) {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, commandArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', rejectPromise);
@@ -74,26 +108,23 @@ function run(command, args) {
 async function download() {
   if (!force) {
     const existing = await stat(cachedArchive).catch(() => null);
-    if (existing?.isFile()) {
-      const digest = sha256(await readFile(cachedArchive));
-      if (digest === DARTPAD_SHA256) {
-        console.log(`Using cached ${cachedArchive}`);
-        return cachedArchive;
-      }
-      console.log('Cached archive does not match the expected checksum; downloading again.');
+    if (existing?.isFile() && sha256(await readFile(cachedArchive)) === DARTPAD_SHA256) {
+      console.log(`Using cached ${cachedArchive}`);
+      return cachedArchive;
     }
   }
 
   console.log(`Downloading ${archiveUrl}`);
   const response = await fetch(archiveUrl);
-  if (!response.ok) {
-    throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-  }
+  if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`);
 
   const bytes = Buffer.from(await response.arrayBuffer());
   const digest = sha256(bytes);
   if (digest !== DARTPAD_SHA256) {
-    throw new Error(`Checksum mismatch for dartpad ${DARTPAD_VERSION}\n  expected ${DARTPAD_SHA256}\n  actual   ${digest}`);
+    throw new Error(
+      `Checksum mismatch for dartpad ${DARTPAD_VERSION}\n` +
+        `  expected ${DARTPAD_SHA256}\n  actual   ${digest}`,
+    );
   }
 
   await writeFile(cachedArchive, bytes);
@@ -101,36 +132,52 @@ async function download() {
   return cachedArchive;
 }
 
-async function main() {
-  const archive = await download();
+async function dirSize(dir) {
+  const entries = await readdir(dir, { withFileTypes: true, recursive: true });
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.isFile()) {
+      total += (await stat(join(entry.parentPath ?? dir, entry.name))).size;
+    }
+  }
+  return total;
+}
+
+async function vendorVariant(name, archive, extracted) {
+  const variant = VARIANTS[name];
+  const destination = join(root, variant.destination);
 
   if (force) await rm(destination, { recursive: true, force: true });
   await mkdir(destination, { recursive: true });
 
+  await run('tar', ['-xzf', archive, '-C', extracted, variant.source]);
+
+  const from = join(extracted, variant.source);
+  await cp(from, destination, { recursive: true, force: true });
+
+  for (const file of variant.required) {
+    const info = await stat(join(destination, file)).catch(() => null);
+    if (!info?.isFile()) throw new Error(`Archive did not contain ${variant.source}/${file}`);
+  }
+
+  const count = (await readdir(destination, { recursive: true })).length;
+  const size = await dirSize(destination);
+  console.log(
+    `Vendored ${name} → ${variant.destination} (${count} entries, ` +
+      `${(size / 1024 / 1024).toFixed(1)} MB)`,
+  );
+}
+
+async function main() {
+  const archive = await download();
   const extracted = await mkdtemp(join(tmpdir(), 'dartpad-extract-'));
   try {
-    await run('tar', [
-      '-xzf',
-      archive,
-      '-C',
-      extracted,
-      ...ASSETS.map((asset) => `web/dart/${asset}`),
-    ]);
-
-    const from = join(extracted, 'web', 'dart');
-    for (const asset of ASSETS) {
-      const source = join(from, asset);
-      const info = await stat(source).catch(() => null);
-      if (!info?.isFile()) throw new Error(`Archive did not contain web/dart/${asset}`);
-      await writeFile(join(destination, asset), await readFile(source));
+    for (const name of selected) {
+      await vendorVariant(name, archive, extracted);
     }
   } finally {
     await rm(extracted, { recursive: true, force: true });
   }
-
-  const files = await readdir(destination);
-  const total = await Promise.all(files.map(async (file) => (await stat(join(destination, file))).size));
-  console.log(`Vendored ${files.length} files into public/dart/ (${(total.reduce((a, b) => a + b, 0) / 1024 / 1024).toFixed(1)} MB)`);
 }
 
 await main();

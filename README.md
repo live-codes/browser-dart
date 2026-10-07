@@ -1,9 +1,11 @@
 # browser-dart
 
-Proof of concept for running Dart in the browser with **no compilation server**.
+Proof of concept for running **Dart and Flutter** in the browser with **no
+compilation server**.
 
-Type Dart into the page, hit Run, and it compiles and executes entirely
-client-side.
+Type Dart — or a whole Flutter app — into the page, hit Run, and it compiles and
+executes entirely client-side. The **Dart / Flutter** toggle in the header
+switches engines.
 
 ## Run it
 
@@ -16,9 +18,16 @@ Any static host works — the server exists only because module workers and
 
 ## How it works
 
-The Dart team ships a fully client-side Dart toolchain inside the
-[`dartpad`](https://pub.dev/packages/dartpad) pub package. `public/dart/` is a
-verbatim copy of `web/dart/` from **dartpad 0.0.9**, and contains:
+The Dart team ships a fully client-side toolchain inside the
+[`dartpad`](https://pub.dev/packages/dartpad) pub package as two independent
+asset directories, both vendored verbatim from **dartpad 0.0.9**:
+
+| Variant | Source | Destination | Size |
+| --- | --- | --- | --- |
+| Dart | `web/dart/` | `public/dart/` | ~28 MB |
+| Flutter | `web/flutter/` | `public/flutter/` | ~225 MB |
+
+They share the same worker and DDC runtime, and consist of:
 
 | File | Role |
 | --- | --- |
@@ -113,21 +122,78 @@ Two caveats worth knowing before relying on this:
 Releases before 0.0.7 passed `null` here (`sourceMapSize: 4` — the four bytes of
 the string `null`), which is why 0.0.6 stack traces showed `blob:` URLs.
 
+## Flutter
+
+Flutter needs no changes to the client — `DartPad.create({ assetBaseUrl })` and
+`run(path, mode)` already cover it. Pointing `assetBaseUrl` at `public/flutter/`
+and running with `mode: 'flutter'` is the entire difference.
+
+The Flutter DartPad SDK declares two run modes (`console` and `flutter`). The
+`flutter` mode compiles a *generated wrapper* around your entrypoint instead of
+your file directly, and that wrapper is what starts the engine:
+
+```dart
+// workspace/pad_1/main.dart.flutter-wrapper.dart (generated)
+Future<void> main() async {
+  ui_web.urlStrategy = null;                 // avoids a SecurityError in srcdoc iframes
+  FlutterError.onError = (d) => _consoleError(d.toString().toJS);
+  await ui_web.bootstrapEngine(runApp: () {
+    entrypoint.main();                       // your main()
+  });
+}
+```
+
+So your `main()` runs inside the Flutter engine and the sandbox iframe *becomes*
+the app's viewport — which is why the PoC grows it to 440px for Flutter. Flutter
+renders through CanvasKit, fetched from `www.gstatic.com/flutter-canvaskit/` at
+runtime.
+
+A Flutter pad also needs a pubspec that depends on the SDK:
+
+```yaml
+name: dartpad_poc
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+```
+
+`pub get` resolves that against the Flutter SDK inside the worker's in-memory
+file system (`flutterSdkPath`), and the SDK ships a pre-populated `/pub-cache`
+(added in 0.0.8) — it resolves the ~34 transitive packages without hitting the
+network.
+
+Source maps work here too, and cover the generated wrapper as well as your file:
+
+```
+1 module · 37.8 KB · source map → 2 sources (main.dart.flutter-wrapper.dart, main.dart)
+```
+
+**The catch is the download: ~225 MB, 8× the Dart SDK.** `flutter_web.js` alone
+is 123 MB (the precompiled framework, kept as DDC modules so that only your code
+is recompiled), `sdk.tar` is 64 MB, and `dart_sdk.js` is 15 MB. Flutter is
+therefore opt-in here: fetch it with `--variant flutter`, and the header toggle
+disables itself when the assets are absent. A real integration should treat this
+as a two-tier language — load the worker lazily and warn before pulling 225 MB.
+
 ## Layout
 
 ```
 index.html                    the proof-of-concept page
 dartpad-client.js             DartPad protocol client (reusable, dependency-free)
 server.mjs                    minimal static server for local development
-scripts/fetch-sdk.mjs         re-vendor public/dart/ from a pinned dartpad release
-public/dart/                  vendored toolchain assets (~30 MB)
+scripts/fetch-sdk.mjs         re-vendor SDK assets from a pinned dartpad release
+public/dart/                  vendored Dart toolchain (~28 MB)
+public/flutter/               vendored Flutter toolchain (~225 MB, opt-in)
 ```
 
 ## Refreshing the assets
 
 ```bash
-node scripts/fetch-sdk.mjs          # uses the cached archive if the checksum matches
-node scripts/fetch-sdk.mjs --force  # re-download and re-extract
+node scripts/fetch-sdk.mjs                         # dart only (default)
+node scripts/fetch-sdk.mjs --variant flutter       # add the Flutter SDK (~225 MB)
+node scripts/fetch-sdk.mjs --variant all --force   # both, ignoring the cached archive
 ```
 
 `scripts/fetch-sdk.mjs` pins the `dartpad` version and its published sha256.
@@ -160,16 +226,18 @@ and is still in flux, so the migration is deferred.
 
 ## Notes for a real integration
 
-- First load pulls ~28 MB; `dart_sdk.js` and `worker.wasm` should be cached
-  aggressively and the language flagged as a large download. The payload shrinks
-  between releases — `sdk.tar` went from 11.2 MB (0.0.6) to 8.5 MB (0.0.9).
-- `pub get` resolves through pub.dev, so package resolution needs network
-  access (compilation itself does not).
+- First load pulls ~28 MB for Dart and ~225 MB for Flutter; `dart_sdk.js`,
+  `flutter_web.js` and `worker.wasm` should be cached aggressively and both
+  flagged as large downloads. The payload shrinks between releases — `sdk.tar`
+  went from 11.2 MB (0.0.6) to 8.5 MB (0.0.9).
+- `pub get` resolves through pub.dev for Dart, but Flutter resolves against the
+  pre-populated `/pub-cache` bundled in `sdk.tar`, so it works offline.
 - Source-mapped stack traces work from 0.0.7, but only for errors that reach
   `window.onerror` / `unhandledrejection`; a synchronous throw from `main()`
   arrives as a message with no frames.
-- The SDK exposes hot reload/restart, the Dart analyzer (LSP), and a Flutter
-  run mode. This PoC only uses the `console` mode and a fresh sandbox per run.
+- The SDK also exposes hot reload/restart and the Dart analyzer (LSP) — none of
+  which this PoC uses. It runs a fresh sandbox per run instead, which is the
+  cleanest semantic for a playground but throws away hot-reload state.
 - `dartpad` is an unlisted `0.0.x` preview whose asset layout is still moving,
   so pin the version and vendor the bytes rather than fetching a CDN path at
   runtime.
