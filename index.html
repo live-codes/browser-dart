@@ -339,20 +339,43 @@
 
     /**
      * DDC's `ddcLibraryBundle` format registers its source map in a trailing
-     * `dartDevEmbedder.debugger.setSourceMap("<module>", <map-or-null>)` call.
+     * `dartDevEmbedder.debugger.setSourceMap("<module>", <json-or-null>)` call.
      *
-     * Note: the published dartpad 0.0.6 assets always pass `null` here -
-     * source map generation was only wired up on Dart SDK `main` on
-     * 2026-09-15, after that release was cut.
+     * From dartpad 0.0.7 the second argument is a standard source map v3 whose
+     * `sources` point into the worker's in-memory file system, e.g.
+     * `workspace/pad_1/main.dart`. It is a single-quoted JS string; older
+     * builds passed `null` here instead.
      */
     function extractSourceMap(code) {
-      const call = /setSourceMap\(\s*"(?:[^"\\]|\\.)*"\s*,\s*("(?:[^"\\]|\\.)*"|null)\s*\)/.exec(code);
-      if (!call || call[1] === 'null') return null;
-      try {
-        return JSON.parse(JSON.parse(call[1]));
-      } catch {
-        return null;
+      const marker = 'setSourceMap(';
+      const start = code.indexOf(marker);
+      if (start === -1) return null;
+
+      const args = code.slice(start + marker.length);
+      const comma = args.indexOf(',');
+      if (comma === -1) return null;
+
+      const rest = args.slice(comma + 1).trimStart();
+      const quote = rest[0];
+      if (quote !== "'" && quote !== '"') return null;
+
+      let end = -1;
+      for (let i = 1; i < rest.length; i += 1) {
+        if (rest[i] === '\\') { i += 1; continue; }
+        if (rest[i] === quote) { end = i; break; }
       }
+      if (end === -1) return null;
+
+      const literal = rest.slice(1, end);
+      // Single-quoted payloads are already valid JSON; double-quoted ones need
+      // their escaped quotes unwrapped first.
+      for (const candidate of [literal, literal.replace(/\\(["\\/])/g, '$1')]) {
+        try {
+          const parsed = JSON.parse(candidate);
+          if (parsed && typeof parsed === 'object') return parsed;
+        } catch { /* try the next quoting form */ }
+      }
+      return null;
     }
 
     function renderModules() {
@@ -368,7 +391,7 @@
 
       const code = modules[modules.length - 1];
       const map = extractSourceMap(code);
-      const name = new URL(map?.file ?? map?.sources?.[0] ?? '', 'file:///').pathname.split('/').pop();
+      const sources = map?.sources ?? [];
 
       if (map) {
         sourcemap.textContent = JSON.stringify(map, null, 2);
@@ -376,15 +399,19 @@
       } else {
         sourcemap.innerHTML =
           '<span class="empty">This module carries no inline source map.<br><br>' +
-          'DDC emitted <code>setSourceMap("main", null)</code> with <code>sourceMapSize: 4</code> ' +
-          '(the 4 bytes of the string <code>null</code>). Source map generation was wired up on ' +
-          'Dart SDK <code>main</code> on 2026-09-15, after the published dartpad 0.0.6 assets were built.</span>';
+          'DDC registers one via <code>setSourceMap("main", &lt;json&gt;)</code>; ' +
+          'builds before dartpad 0.0.7 passed <code>null</code> here instead.</span>';
       }
 
-      const sourceCount = map?.sources?.length ?? 0;
-      meta.textContent = map
-        ? `${modules.length} module${modules.length === 1 ? '' : 's'} · ${formatBytes(code.length)} · inline map for ${sourceCount} source${sourceCount === 1 ? '' : 's'}${name ? ` (${name})` : ''}`
-        : `${modules.length} module${modules.length === 1 ? '' : 's'} · ${formatBytes(code.length)} · no source map`;
+      const moduleCount = `${modules.length} module${modules.length === 1 ? '' : 's'}`;
+      if (map) {
+        const label = sources.map((source) => source.replace(/^.*\//, '')).join(', ');
+        meta.textContent =
+          `${moduleCount} · ${formatBytes(code.length)} · source map → ` +
+          `${sources.length} source${sources.length === 1 ? '' : 's'} (${label})`;
+      } else {
+        meta.textContent = `${moduleCount} · ${formatBytes(code.length)} · no source map`;
+      }
     }
 
     function handleModule(code) {

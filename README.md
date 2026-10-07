@@ -18,7 +18,7 @@ Any static host works — the server exists only because module workers and
 
 The Dart team ships a fully client-side Dart toolchain inside the
 [`dartpad`](https://pub.dev/packages/dartpad) pub package. `public/dart/` is a
-verbatim copy of `web/dart/` from that package, and contains:
+verbatim copy of `web/dart/` from **dartpad 0.0.9**, and contains:
 
 | File | Role |
 | --- | --- |
@@ -29,6 +29,7 @@ verbatim copy of `web/dart/` from that package, and contains:
 | `ddc_module_loader.js` | DDC's AMD-style module loader |
 | `dart_sdk.js` | precompiled DDC modules for the Dart SDK runtime (`dart:core`, …) |
 | `dart_sdk.js.map` | source map for `dart_sdk.js`, referenced by a `sourceMappingURL` comment |
+| `dart_stack_trace_mapper.js` | installed by `sandbox.js` as `$dartStackTraceUtility`; maps JS frames back to Dart source |
 
 `dartpad-client.js` talks to the worker over its documented
 [JSON-RPC protocol](https://github.com/dart-lang/sdk/blob/main/pkg/dartpad/doc/worker-protocol.md):
@@ -73,28 +74,44 @@ needs the compiled output must do the same, or proxy the worker↔sandbox port.
 
 ### Source maps
 
-**Not in the published release, but they are coming.** DDC registers its map in
-a trailing call:
+**Yes, as of `dartpad` 0.0.7.** DDC registers a standard source map v3 in a
+trailing call, and the **Source map** tab shows the parsed result:
 
 ```js
-dartDevEmbedder.debugger.setSourceMap("main", <map-or-null>);
+{dartSize: 409, sourceMapSize: 497}
+dartDevEmbedder.debugger.setSourceMap("main", '{"version":3,"sourceRoot":"",
+  "sources":["workspace/pad_1/main.dart"],"names":[],"mappings":"…","file":"main.js"}');
+//# sourceMappingURL=main.js.map
+//# sourceURL=main.js?0
 ```
 
-With `dartpad` **0.0.6** that argument is `null`, and the module reports
-`sourceMapSize: 4` — the four bytes of the string `null`. There is no `mappings`
-array anywhere in the output, so stack traces point at `blob:` URLs rather than
-Dart source.
+`sandbox.js` loads `dart_stack_trace_mapper.js`, wires it to DDC's source-map
+registry, and appends a generation counter to each module's `sourceURL` so a hot
+reload remaps against the new map instead of a cached one. Uncaught errors come
+back with Dart locations:
 
-This is timing, not a dead end. Source map generation was wired up on Dart SDK
-`main` by commit `9e44b6a`, *"Map sandbox stack traces back to Dart source"*, on
-2026-09-15 — five days after 0.0.6 was published. The same change also adds a
-`dart_stack_trace_mapper.js` sandbox asset that installs itself as
-`$dartStackTraceUtility`, so the vendored asset list will grow with the next
-release. Pick it up with `node scripts/fetch-sdk.mjs --force` after bumping
-`DARTPAD_VERSION` and `DARTPAD_SHA256`.
+```
+Error: Bad state: async boom
+dart:sdk_internal 3805:11      throw_
+workspace/pad_1/main.dart 6:5  <fn>
+dart:sdk_internal 22100:11     internalCallback
+```
 
-Note the SDK runtime is mapped today: `dart_sdk.js.map` ships in the package and
-covers frames inside `dart:core` and friends. Only user code is unmapped.
+Two caveats worth knowing before relying on this:
+
+- **Synchronous throws from `main()` are not mapped.** `renderError` — the only
+  caller of the mapper — is wired into `window.onerror` and `unhandledrejection`
+  alone. `rpcMethods.run` catches the error and rethrows bare `e.message`, so
+  `run()` rejects with the message and no frames. Asynchronously-thrown errors
+  get the full mapped trace. Patching `$dartpadRunModes.console` before
+  `sandbox.js` initialises would close this gap.
+- **The map is not discoverable by browser devtools.** `sourceMappingURL` points
+  at `main.js.map`, which does not exist — the map is handed to the runtime
+  mapper through `setSourceMap` only. An embedding that wants devtools-mapped
+  frames must rewrite the module with an inline `data:` sourceMappingURL.
+
+Releases before 0.0.7 passed `null` here (`sourceMapSize: 4` — the four bytes of
+the string `null`), which is why 0.0.6 stack traces showed `blob:` URLs.
 
 ## Layout
 
@@ -115,6 +132,25 @@ node scripts/fetch-sdk.mjs --force  # re-download and re-extract
 
 `scripts/fetch-sdk.mjs` pins the `dartpad` version and its published sha256.
 
+**Why 0.0.9 and not the latest?** `dartpad` 0.0.10 stopped bundling prebuilt
+`web/` assets in the published package and moved to a `dart run dartpad setup`
+command, which needs a local Dart SDK. 0.0.9 is the newest release that still
+ships the assets in this layout, so it is the newest one we can vendor without
+adding Dart to the toolchain.
+
+The forward path is the published release artifact rather than the pub package
+(documented in `pkg/dartpad/doc/releases.md`):
+
+```
+https://storage.googleapis.com/dart-archive/channels/<channel>/raw/latest/dartpad/dartpad.zip
+https://storage.googleapis.com/dart-archive/channels/<channel>/release/latest/dartpad/dartpad.zip
+```
+
+That is the CDN the Dart team points at, it ships a `.sha256sum`, and it is what
+0.0.10+ expects — but its layout differs from `web/dart/` (no `dart/` subfolder
+on the `main` channel, `sandbox_runtime.js` instead of `ddc_module_loader.js`)
+and is still in flux, so the migration is deferred.
+
 ## Requirements
 
 - A static origin (see above).
@@ -124,11 +160,16 @@ node scripts/fetch-sdk.mjs --force  # re-download and re-extract
 
 ## Notes for a real integration
 
-- First load pulls ~30 MB; `dart_sdk.js` and `worker.wasm` should be cached
-  aggressively and the language flagged as a large download.
+- First load pulls ~28 MB; `dart_sdk.js` and `worker.wasm` should be cached
+  aggressively and the language flagged as a large download. The payload shrinks
+  between releases — `sdk.tar` went from 11.2 MB (0.0.6) to 8.5 MB (0.0.9).
 - `pub get` resolves through pub.dev, so package resolution needs network
   access (compilation itself does not).
+- Source-mapped stack traces work from 0.0.7, but only for errors that reach
+  `window.onerror` / `unhandledrejection`; a synchronous throw from `main()`
+  arrives as a message with no frames.
 - The SDK exposes hot reload/restart, the Dart analyzer (LSP), and a Flutter
   run mode. This PoC only uses the `console` mode and a fresh sandbox per run.
-- `dartpad` is currently an unlisted `0.0.x` preview, so the version is pinned
-  and the bytes are vendored rather than loaded from a CDN.
+- `dartpad` is an unlisted `0.0.x` preview whose asset layout is still moving,
+  so pin the version and vendor the bytes rather than fetching a CDN path at
+  runtime.

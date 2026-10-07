@@ -25,8 +25,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const DARTPAD_VERSION = '0.0.6';
-const DARTPAD_SHA256 = 'ca0ffa0c9537b6206184d0160e6adc453caefacd738dcfd2235e3563f59194af';
+const DARTPAD_VERSION = '0.0.9';
+const DARTPAD_SHA256 = '3ac8de047c0c6b82ff63bc67f2fff2f579d6e4b6218028392b75b982a10c672f';
 
 /** `web/dart/` entries this project depends on. */
 const ASSETS = [
@@ -34,6 +34,9 @@ const ASSETS = [
   // Referenced by a `//# sourceMappingURL=` comment at the end of dart_sdk.js,
   // so the browser fetches it when devtools is open.
   'dart_sdk.js.map',
+  // Installed by sandbox.js as `$dartStackTraceUtility`; maps JS frames in
+  // uncaught errors back to Dart source locations (dartpad >= 0.0.7).
+  'dart_stack_trace_mapper.js',
   'ddc_module_loader.js',
   'sandbox.js',
   'sdk.tar',

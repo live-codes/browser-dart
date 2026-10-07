@@ -6,7 +6,7 @@
 export async function compileStreaming(source) {
   const builtins = {builtins: ['js-string'], importedStringConstants: ''};
   return new CompiledApp(
-      await WebAssembly.compileStreaming(source, builtins), builtins);
+      await _compileStreaming(source, builtins), builtins);
 }
 
 // Compiles a dart2wasm-generated wasm module from `bytes` which is then
@@ -14,6 +14,21 @@ export async function compileStreaming(source) {
 export async function compile(bytes) {
   const builtins = {builtins: ['js-string'], importedStringConstants: ''};
   return new CompiledApp(await WebAssembly.compile(bytes, builtins), builtins);
+}
+
+let _isCompileStreamingSupported;
+async function _compileStreaming(source, builtins) {
+  _isCompileStreamingSupported ??= WebAssembly.compileStreaming(
+    new Response(
+      new Uint8Array([0,97,115,109,1,0,0,0,1,4,1,96,0,0,2,23,1,14,119,97,115,109,58,106,115,45,115,116,114,105,110,103,4,99,97,115,116,0,0]),
+      {headers: {'Content-Type': 'application/wasm'}},
+    ),
+    builtins,
+  ).then(() => false, (e) => e instanceof WebAssembly.CompileError);
+  if (await _isCompileStreamingSupported) {
+    return WebAssembly.compileStreaming(source, builtins);
+  }
+  return WebAssembly.compile(await (await source).arrayBuffer(), builtins);
 }
 
 class CompiledApp {
@@ -92,20 +107,12 @@ class CompiledApp {
       CC: () => Date.now(),
       CD: x0 => new Int16Array(x0),
       CE: x0 => x0.status,
-      D: Function.prototype.call.bind(BigInt.prototype.toString),
+      D: Function.prototype.call.bind(String.prototype.indexOf),
       DB: a => a.length,
       DC: () => 1000 * performance.now(),
       DD: x0 => new Uint16Array(x0),
       DE: x0 => x0.getReader(),
-      E: (exn) => {
-        let stackString = exn.toString();
-        let frames = stackString.split('\n');
-        let drop = 4;
-        if (frames[0].startsWith('Error')) {
-            drop += 1;
-        }
-        return frames.slice(drop).join('\n');
-      },
+      E: o => o,
       EB: (o, p, r) => o.replaceAll(p, () => r),
       EC: (handle) => clearTimeout(handle),
       ED: (jsArray, jsArrayOffset, wasmArray, wasmArrayOffset, length) => {
@@ -115,12 +122,16 @@ class CompiledApp {
         }
       },
       EE: x0 => x0.read(),
-      F: () => new Error().stack,
+      F: s => JSON.stringify(s),
       FB: s => s.trim(),
       FC: s => new Date(s * 1000).getTimezoneOffset() * 60,
       FD: x0 => new Int32Array(x0),
       FE: x0 => x0.value,
-      G: s => JSON.stringify(s),
+      G: o => {
+        if (o === undefined || o === null) return 0;
+        if (typeof o === 'number') return 1;
+        return 2;
+      },
       GB: (o, p) => p in o,
       GC: Date.now,
       GD: (jsArray, jsArrayOffset, wasmArray, wasmArrayOffset, length) => {
@@ -130,17 +141,25 @@ class CompiledApp {
         }
       },
       GE: x0 => x0.done,
-      H: Function.prototype.call.bind(Number.prototype.toString),
+      H: x0 => x0.index,
       HB: o => typeof o === 'function' && o[jsWrappedDartFunctionSymbol] === true,
       HC: (b, o) => new DataView(b, o),
       HD: x0 => new Uint32Array(x0),
       HE: x0 => x0.cancel(),
-      I: Function.prototype.call.bind(String.prototype.indexOf),
+      I: (exn) => {
+        let stackString = exn.toString();
+        let frames = stackString.split('\n');
+        let drop = 4;
+        if (frames[0].startsWith('Error')) {
+            drop += 1;
+        }
+        return frames.slice(drop).join('\n');
+      },
       IB: f => f.dartFunction,
       IC: (b, o, l) => new DataView(b, o, l),
       ID: x0 => new Float32Array(x0),
       IE: x0 => x0.body,
-      J: (s, p, i) => s.lastIndexOf(p, i),
+      J: () => new Error().stack,
       JB: (wasmFunction,f) => finalizeWrapper(f, function(x0) { return wasmFunction(f,arguments.length,x0) }),
       JC: (a, s) => a.join(s),
       JD: x0 => new Float64Array(x0),
@@ -149,7 +168,7 @@ class CompiledApp {
         if (typeof(o) === 'string') return 1;
         return 2;
       },
-      K: o => o,
+      K: o => String(o),
       KB: (wasmFunction,f) => finalizeWrapper(f, function(x0,x1) { return wasmFunction(f,arguments.length,x0,x1) }),
       KC: (a, l) => a.length = l,
       KD: (jsArray, jsArrayOffset, wasmArray, wasmArrayOffset, length) => {
@@ -159,41 +178,43 @@ class CompiledApp {
         }
       },
       KE: x0 => x0.headers,
-      L: o => {
-        if (o === undefined || o === null) return 0;
-        if (typeof o === 'number') return 1;
-        return 2;
-      },
+      L: o => o === undefined,
       LB: (p, s, f) => p.then(s, (e) => f(e, e === undefined)),
       LC: (a, l) => a.length = l,
       LD: x0 => new ArrayBuffer(x0),
       LE: x0 => x0.signal,
-      M: x0 => x0.index,
+      M: (x0,x1) => x0.exec(x1),
       MB: Function.prototype.call.bind(Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength').get),
       MC: x0 => x0.clearMarks(),
       MD: (x0,x1,x2) => new Uint8Array(x0,x1,x2),
       ME: x0 => x0.abort(),
-      N: o => String(o),
+      N: (x0,x1) => { x0.lastIndex = x1 },
       NB: o => o.buffer,
       NC: x0 => x0.clearMeasures(),
       ND: (x0,x1,x2) => new DataView(x0,x1,x2),
       NE: (x0,x1) => x0.getRandomValues(x1),
-      O: o => o === undefined,
+      O: o => o,
       OB: (o) => new DataView(o.buffer, o.byteOffset, o.byteLength),
       OC: (x0,x1) => x0.parse(x1),
       OD: (o, p) => o[p],
       OE: () => globalThis.crypto,
-      P: (x0,x1) => x0.exec(x1),
+      P: (s, m) => {
+        try {
+          return new RegExp(s, m);
+        } catch (e) {
+          return String(e);
+        }
+      },
       PB: (o, start, length) => new Float64Array(o.buffer, o.byteOffset + start, length),
       PC: (x0,x1,x2) => x0.mark(x1,x2),
       PD: x0 => new Array(x0),
       PE: l => new DataView(new ArrayBuffer(l)),
-      Q: (x0,x1) => { x0.lastIndex = x1 },
+      Q: o => o instanceof RegExp,
       QB: Function.prototype.call.bind(DataView.prototype.setFloat64),
       QC: (x0,x1,x2,x3) => x0.measure(x1,x2,x3),
       QD: (x0,x1,x2) => { x0[x1] = x2 },
       QE: x0 => new DecompressionStream(x0),
-      R: o => o,
+      R: (string, times) => string.repeat(times),
       RB: Function.prototype.call.bind(DataView.prototype.getFloat64),
       RC: (o) => {
         const typeofValue = typeof o;
@@ -206,13 +227,7 @@ class CompiledApp {
         return 2;
       },
       RE: x0 => x0.getWriter(),
-      S: (s, m) => {
-        try {
-          return new RegExp(s, m);
-        } catch (e) {
-          return String(e);
-        }
-      },
+      S: (s, p, i) => s.lastIndexOf(p, i),
       SB: (o, start, length) => new Float32Array(o.buffer, o.byteOffset + start, length),
       SC: () => globalThis.JSON,
       SD: o => {
@@ -221,7 +236,7 @@ class CompiledApp {
         return 2;
       },
       SE: (x0,x1) => x0.write(x1),
-      T: o => o instanceof RegExp,
+      T: o => o,
       TB: Function.prototype.call.bind(DataView.prototype.setFloat32),
       TC: x0 => x0.clearMarks,
       TD: o => {
@@ -230,7 +245,11 @@ class CompiledApp {
         return 2;
       },
       TE: x0 => x0.close(),
-      U: (string, times) => string.repeat(times),
+      U: o => {
+        if (o === undefined || o === null) return 0;
+        if (typeof o === 'boolean') return 1;
+        return 2;
+      },
       UB: Function.prototype.call.bind(DataView.prototype.getFloat32),
       UC: x0 => x0.clearMeasures,
       UD: o => {
@@ -239,21 +258,17 @@ class CompiledApp {
         return 2;
       },
       UE: x0 => x0.releaseLock(),
-      V: o => o,
+      V: x0 => x0.dotAll,
       VB: (o, start, length) => new Uint32Array(o.buffer, o.byteOffset + start, length),
       VC: x0 => x0.mark,
       VD: o => o instanceof Uint16Array,
       VE: x0 => x0.readable,
-      W: o => {
-        if (o === undefined || o === null) return 0;
-        if (typeof o === 'boolean') return 1;
-        return 2;
-      },
+      W: x0 => x0.unicode,
       WB: Function.prototype.call.bind(DataView.prototype.setUint32),
       WC: x0 => x0.measure,
       WD: o => o instanceof Int16Array,
       WE: x0 => x0.writable,
-      X: x0 => x0.dotAll,
+      X: x0 => x0.ignoreCase,
       XB: Function.prototype.call.bind(DataView.prototype.getUint32),
       XC: () => globalThis.performance,
       XD: o => o instanceof Uint8ClampedArray,
@@ -263,7 +278,7 @@ class CompiledApp {
         }
         return s;
       },
-      Y: x0 => x0.unicode,
+      Y: x0 => x0.multiline,
       YB: (o, start, length) => new Int32Array(o.buffer, o.byteOffset + start, length),
       YC: o => o.byteOffset,
       YD: o => {
@@ -272,7 +287,7 @@ class CompiledApp {
         return 2;
       },
       YE: (d, precision) => d.toPrecision(precision),
-      Z: x0 => x0.ignoreCase,
+      Z: Function.prototype.call.bind(Number.prototype.toString),
       ZB: Function.prototype.call.bind(DataView.prototype.setInt32),
       ZC: (a, i) => a.splice(i, 1)[0],
       ZD: o => {
@@ -281,7 +296,7 @@ class CompiledApp {
         return 2;
       },
       ZE: (wasmFunction,f) => finalizeWrapper(f, function(x0) { return wasmFunction(f,arguments.length,x0) }),
-      a: x0 => x0.multiline,
+      a: Function.prototype.call.bind(BigInt.prototype.toString),
       aB: Function.prototype.call.bind(DataView.prototype.getInt32),
       aC: (a, b) => a == b ? 0 : (a > b ? 1 : -1),
       aD: () => new Array(),
@@ -481,58 +496,12 @@ class CompiledApp {
 
     };
 
-    const jsStringPolyfill = {
-      "charCodeAt": (s, i) => s.charCodeAt(i),
-      "compare": (s1, s2) => {
-        if (s1 < s2) return -1;
-        if (s1 > s2) return 1;
-        return 0;
-      },
-      "concat": (s1, s2) => s1 + s2,
-      "equals": (s1, s2) => s1 === s2,
-      "fromCharCode": (i) => String.fromCharCode(i),
-      "length": (s) => s.length,
-      "substring": (s, a, b) => s.substring(a, b),
-      "fromCharCodeArray": (a, start, end) => {
-        if (end <= start) return '';
-
-        const read = dartInstance.exports.$wasmI16ArrayGet;
-        let result = '';
-        let index = start;
-        const chunkLength = Math.min(end - index, 500);
-        let array = new Array(chunkLength);
-        while (index < end) {
-          const newChunkLength = Math.min(end - index, 500);
-          for (let i = 0; i < newChunkLength; i++) {
-            array[i] = read(a, index++);
-          }
-          if (newChunkLength < chunkLength) {
-            array = array.slice(0, newChunkLength);
-          }
-          result += String.fromCharCode(...array);
-        }
-        return result;
-      },
-      "intoCharCodeArray": (s, a, start) => {
-        if (s === '') return 0;
-
-        const write = dartInstance.exports.$wasmI16ArraySet;
-        for (var i = 0; i < s.length; ++i) {
-          write(a, start++, s.charCodeAt(i));
-        }
-        return s.length;
-      },
-      "test": (s) => typeof s == "string",
-    };
-
-
     
 
     dartInstance = await WebAssembly.instantiate(this.module, {
       ...baseImports,
       ...additionalImports,
       
-      "wasm:js-string": jsStringPolyfill,
     });
 
     return new InstantiatedApp(this, dartInstance);

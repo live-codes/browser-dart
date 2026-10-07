@@ -2,6 +2,7 @@
 
 ## Workflow
 - Prefers to start with a minimal, standalone proof-of-concept (e.g. a single simple HTML page) to validate feasibility before doing a full integration into a larger codebase. Confidence: 0.65
+- Expects third-party dependencies that are pinned/vendored to be revisited when upstream releases land, and wants an explicit assessment of what each upgrade changes for the project's work — not just a version bump. Confidence: 0.5
 
 ## Architecture
 - Prefers client-side / serverless solutions — features should run entirely in the browser with no backend or server-side compilation ("no servers"). Confidence: 0.6
