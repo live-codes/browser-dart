@@ -16,8 +16,6 @@
  *   { payload: "<json>", port?: MessagePort, bytes?: Uint8Array }
  */
 
-const DEFAULT_ASSET_BASE_URL = 'public/dart/';
-
 /** Notifications the worker emits while code executes inside the sandbox. */
 export const SANDBOX_NOTIFICATIONS = {
   console: 'workspace/sandbox/console',
@@ -142,7 +140,7 @@ export class RpcClient {
  * real location, so `import.meta.url` inside the worker still resolves
  * `worker.wasm`, `sdk.tar` and friends relative to the asset directory.
  */
-export function startWorker({ assetBaseUrl = DEFAULT_ASSET_BASE_URL, options = {} } = {}) {
+export function startWorker({ assetBaseUrl, options = {} } = {}) {
   const baseUrl = resolveAssetBaseUrl(assetBaseUrl);
   const workerUrl = new URL('worker.js', baseUrl).href;
 
@@ -207,7 +205,7 @@ const MODULE_CAPTURE_HOOK = `
  * reported through it.
  */
 export function createSandbox({
-  assetBaseUrl = DEFAULT_ASSET_BASE_URL,
+  assetBaseUrl,
   container,
   timeout = 180_000,
   onModule,
@@ -267,8 +265,10 @@ export function createSandbox({
 
 /**
  * A connected Dart development environment: a worker session plus a sandbox.
+ *
+ * The transport layer. `src/index.js` wraps this in the package's public API.
  */
-export class DartPad {
+export class DartpadSession {
   #worker;
   #blobUrl;
   #container;
@@ -289,18 +289,14 @@ export class DartPad {
     this.workspaceFolder = workspaceFolder;
   }
 
-  static async create({ assetBaseUrl = DEFAULT_ASSET_BASE_URL, container, onNotification, onModule } = {}) {
+  static async create({ assetBaseUrl, container, onModule } = {}) {
     const baseUrl = resolveAssetBaseUrl(assetBaseUrl);
     const { worker, port, blobUrl } = await startWorker({ assetBaseUrl });
     const rpc = new RpcClient(port);
 
-    for (const method of [...Object.values(SANDBOX_NOTIFICATIONS), 'workspace/languageServer/exited']) {
-      rpc.on(method, (params) => onNotification?.(method, params));
-    }
-
     const { workspaceId, workspaceFolder } = await rpc.request('createWorkspace', {});
 
-    return new DartPad({
+    return new DartpadSession({
       worker,
       blobUrl,
       rpc,

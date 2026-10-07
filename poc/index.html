@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dart in the browser · LiveCodes PoC</title>
+<title>@live-codes/dart-wasm · proof of concept</title>
 <style>
   :root {
     --bg: #14141a;
@@ -179,6 +179,20 @@
     white-space: nowrap;
   }
 
+  #packages {
+    width: 250px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: #17171e;
+    color: var(--text);
+    font: 12px/1.4 ui-monospace, "Cascadia Code", Consolas, monospace;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  #packages::placeholder { color: #66667a; }
+
   .tabs { display: flex; gap: 3px; }
 
   .tab {
@@ -270,10 +284,10 @@
   }
 </style>
 </head>
-<body>
+<body data-engine="dart">
   <header>
-    <h1>Dart in the browser</h1>
-    <span class="tag">LiveCodes PoC</span>
+    <h1>dart-wasm</h1>
+    <span class="tag">PoC</span>
     <span class="engine" role="group" aria-label="Engine">
       <button data-engine="dart" aria-pressed="true">Dart</button>
       <button data-engine="flutter" aria-pressed="false">Flutter</button>
@@ -286,7 +300,13 @@
 
   <main>
     <section class="pane">
-      <h2>main.dart</h2>
+      <h2>
+        main.dart
+        <span class="meta">
+          packages
+          <input id="packages" placeholder="http, collection:^1.19.0" spellcheck="false" autocomplete="off" />
+        </span>
+      </h2>
       <textarea id="editor" spellcheck="false"></textarea>
     </section>
     <section class="pane">
@@ -305,11 +325,13 @@
   </main>
 
   <section class="sandbox pane">
-    <h2>Sandbox iframe <span>DDC-compiled modules execute here</span></h2>
+    <h2>Sandbox iframe <span>compiled modules execute, and Flutter apps render, here</span></h2>
   </section>
 
   <script type="module">
-    import { DartPad, SANDBOX_NOTIFICATIONS } from './dartpad-client.js';
+    // Loaded as a module, so the bundle infers its asset base from `import.meta.url`:
+    // dist/dart-wasm.mjs sits next to dart/ and flutter/, which is exactly what it needs.
+    import { createDartpad } from '../dist/dart-wasm.mjs';
 
     const DART_SAMPLE = `void main() {
   print('Hello from Dart, in the browser. 🎯');
@@ -381,33 +403,7 @@ class _CounterAppState extends State<CounterApp> {
 }
 `;
 
-    /**
-     * Both engines speak the same protocol and use the same client. They differ
-     * only in which asset directory serves the worker, and which run mode the
-     * entrypoint is compiled with.
-     */
-    const ENGINES = {
-      dart: {
-        assetBaseUrl: 'public/dart/',
-        mode: 'console',
-        pubspec: ['name: dartpad_poc', 'environment:', "  sdk: '>=3.0.0 <4.0.0'", ''],
-        sample: DART_SAMPLE,
-      },
-      flutter: {
-        assetBaseUrl: 'public/flutter/',
-        mode: 'flutter',
-        pubspec: [
-          'name: dartpad_poc',
-          'environment:',
-          "  sdk: '>=3.0.0 <4.0.0'",
-          'dependencies:',
-          '  flutter:',
-          '    sdk: flutter',
-          '',
-        ],
-        sample: FLUTTER_SAMPLE,
-      },
-    };
+    const SAMPLES = { dart: DART_SAMPLE, flutter: FLUTTER_SAMPLE };
 
     const editor = document.querySelector('#editor');
     const output = document.querySelector('#output');
@@ -418,16 +414,15 @@ class _CounterAppState extends State<CounterApp> {
     const clearButton = document.querySelector('#clear');
     const status = document.querySelector('#status');
     const sandboxContainer = document.querySelector('.sandbox');
+    const packagesInput = document.querySelector('#packages');
     const tabs = [...document.querySelectorAll('.tab')];
     const engineButtons = [...document.querySelectorAll('.engine button')];
 
     let engine = 'dart';
     let dartpad = null;
-    let projectReady = false;
     let modules = [];
 
-    editor.value = ENGINES[engine].sample;
-    document.body.dataset.engine = engine;
+    editor.value = SAMPLES[engine];
 
     function setStatus(text, state = 'idle') {
       status.textContent = text;
@@ -445,8 +440,7 @@ class _CounterAppState extends State<CounterApp> {
 
     function showView(name) {
       for (const tab of tabs) {
-        const selected = tab.dataset.view === name;
-        tab.setAttribute('aria-selected', String(selected));
+        tab.setAttribute('aria-selected', String(tab.dataset.view === name));
       }
       output.hidden = name !== 'output';
       compiled.hidden = name !== 'compiled';
@@ -455,60 +449,21 @@ class _CounterAppState extends State<CounterApp> {
 
     const formatBytes = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
 
-    /**
-     * DDC's `ddcLibraryBundle` format registers its source map in a trailing
-     * `dartDevEmbedder.debugger.setSourceMap("<module>", <json-or-null>)` call.
-     *
-     * From dartpad 0.0.7 the second argument is a standard source map v3 whose
-     * `sources` point into the worker's in-memory file system, e.g.
-     * `workspace/pad_1/main.dart`. It is a single-quoted JS string; older
-     * builds passed `null` here instead.
-     */
-    function extractSourceMap(code) {
-      const marker = 'setSourceMap(';
-      const start = code.indexOf(marker);
-      if (start === -1) return null;
-
-      const args = code.slice(start + marker.length);
-      const comma = args.indexOf(',');
-      if (comma === -1) return null;
-
-      const rest = args.slice(comma + 1).trimStart();
-      const quote = rest[0];
-      if (quote !== "'" && quote !== '"') return null;
-
-      let end = -1;
-      for (let i = 1; i < rest.length; i += 1) {
-        if (rest[i] === '\\') { i += 1; continue; }
-        if (rest[i] === quote) { end = i; break; }
-      }
-      if (end === -1) return null;
-
-      const literal = rest.slice(1, end);
-      // Single-quoted payloads are already valid JSON; double-quoted ones need
-      // their escaped quotes unwrapped first.
-      for (const candidate of [literal, literal.replace(/\\(["\\/])/g, '$1')]) {
-        try {
-          const parsed = JSON.parse(candidate);
-          if (parsed && typeof parsed === 'object') return parsed;
-        } catch { /* try the next quoting form */ }
-      }
-      return null;
-    }
-
     function renderModules() {
-      if (!modules.length) {
-        compiled.innerHTML = '<span class="empty">Run some Dart to see the JavaScript DDC emits.</span>';
+      if (modules.length === 0) {
+        compiled.innerHTML = '<span class="empty">Run some code to see the JavaScript DDC emits.</span>';
         sourcemap.innerHTML = '<span class="empty">No source map yet.</span>';
         meta.textContent = '';
         return;
       }
 
-      compiled.textContent = modules.join('\n\n/* ─────────── next module ─────────── */\n\n');
+      compiled.textContent = modules
+        .map((module) => module.code)
+        .join('\n\n/* ─────────── next module ─────────── */\n\n');
       compiled.scrollTop = 0;
 
-      const code = modules[modules.length - 1];
-      const map = extractSourceMap(code);
+      const module = modules[modules.length - 1];
+      const map = module.map;
       const sources = map?.sources ?? [];
 
       if (map) {
@@ -521,79 +476,54 @@ class _CounterAppState extends State<CounterApp> {
           'builds before dartpad 0.0.7 passed <code>null</code> here instead.</span>';
       }
 
-      const moduleCount = `${modules.length} module${modules.length === 1 ? '' : 's'}`;
+      const count = `${modules.length} module${modules.length === 1 ? '' : 's'}`;
       if (map) {
         const label = sources.map((source) => source.replace(/^.*\//, '')).join(', ');
         meta.textContent =
-          `${moduleCount} · ${formatBytes(code.length)} · source map → ` +
+          `${count} · ${formatBytes(module.code.length)} · source map → ` +
           `${sources.length} source${sources.length === 1 ? '' : 's'} (${label})`;
       } else {
-        meta.textContent = `${moduleCount} · ${formatBytes(code.length)} · no source map`;
+        meta.textContent = `${count} · ${formatBytes(module.code.length)} · no source map`;
       }
     }
 
-    /** Only DDC modules; the Flutter bootstrap is injected as a JS blob too. */
-    function handleModule(code) {
-      if (!code.startsWith('// Generated by DDC')) return;
-      modules.push(code);
-      renderModules();
-    }
-
-    function handleNotification(method, params) {
-      switch (method) {
-        case SANDBOX_NOTIFICATIONS.console:
-          appendOutput(params?.level === 'error' ? 'error' : 'log', params?.message);
-          break;
-        case SANDBOX_NOTIFICATIONS.error:
-        case SANDBOX_NOTIFICATIONS.unhandledRejection:
-          appendOutput('error', params?.message);
-          break;
-      }
-    }
+    /** "http, collection:^1.19.0" -> ['http', 'collection:^1.19.0'] */
+    const parseDependencies = (text) =>
+      text
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
 
     async function boot() {
-      const { assetBaseUrl } = ENGINES[engine];
-      setStatus(engine === 'flutter' ? 'Downloading Flutter toolchain (225 MB)…' : 'Downloading Dart toolchain…', 'busy');
-      const pad = await DartPad.create({
-        assetBaseUrl,
+      setStatus(
+        engine === 'flutter' ? 'Downloading Flutter toolchain (225 MB)…' : 'Downloading Dart toolchain…',
+        'busy',
+      );
+      return createDartpad({
+        engine,
         container: sandboxContainer,
-        onNotification: handleNotification,
-        onModule: handleModule,
+        onConsole: ({ message }) => appendOutput('log', message),
+        onError: ({ message }) => appendOutput('error', message),
+        onLog: ({ message }) => appendOutput('info', message),
+        onModule: (module) => {
+          modules.push(module);
+          renderModules();
+        },
       });
-      setStatus('Ready', 'ok');
-      return pad;
-    }
-
-    async function ensureProject(pad) {
-      if (projectReady) return;
-
-      await pad.writeFile('pubspec.yaml', ENGINES[engine].pubspec.join('\n'));
-
-      setStatus('Resolving packages…', 'busy');
-      try {
-        const { log } = await pad.pub('get');
-        if (log?.trim()) appendOutput('info', log.trim());
-      } catch (error) {
-        appendOutput('warn', `pub get failed (continuing): ${error.message}`);
-      }
-      projectReady = true;
     }
 
     async function run() {
       runButton.disabled = true;
       try {
         dartpad ??= await boot();
-        await ensureProject(dartpad);
-
-        await dartpad.writeFile('main.dart', editor.value);
 
         modules = [];
         renderModules();
         appendOutput('divider', `Run · ${new Date().toLocaleTimeString()} (${engine})`);
         setStatus('Compiling…', 'busy');
 
-        const { log } = await dartpad.run('main.dart', ENGINES[engine].mode);
-        if (log?.trim()) appendOutput('info', log.trim());
+        // `run` writes the pubspec, resolves it when it changed, then compiles and executes.
+        await dartpad.run(editor.value, { dependencies: parseDependencies(packagesInput.value) });
 
         setStatus('Ready', 'ok');
       } catch (error) {
@@ -613,26 +543,26 @@ class _CounterAppState extends State<CounterApp> {
         button.setAttribute('aria-pressed', String(button.dataset.engine === engine));
       }
 
-      // A worker is bound to one asset directory, so switching engines tears
-      // the current one down; the next Run boots the other.
+      // A worker is bound to one asset directory, so switching engines tears the current
+      // one down; the next Run boots the other.
       if (dartpad) {
         await dartpad.dispose().catch(() => {});
         dartpad = null;
       }
-      projectReady = false;
       modules = [];
       renderModules();
-      editor.value = ENGINES[engine].sample;
+      editor.value = SAMPLES[engine];
       setStatus('Not started');
     }
 
-    /** Flutter assets are ~225 MB and opt-in, so only enable the toggle if fetched. */
+    /** Flutter assets are ~225 MB and opt-in, so only enable the toggle when they exist. */
     async function checkFlutterAssets() {
       const button = engineButtons.find((candidate) => candidate.dataset.engine === 'flutter');
-      const response = await fetch(`${ENGINES.flutter.assetBaseUrl}worker.js`, { method: 'HEAD' }).catch(() => null);
+      const probe = new URL('../dist/flutter/worker.js', import.meta.url);
+      const response = await fetch(probe, { method: 'HEAD' }).catch(() => null);
       if (!response?.ok) {
         button.disabled = true;
-        button.title = 'Not vendored. Run: node scripts/fetch-sdk.mjs --variant flutter';
+        button.title = 'Not vendored. Run: npm run fetch';
       }
     }
 
@@ -645,7 +575,9 @@ class _CounterAppState extends State<CounterApp> {
     }
 
     runButton.addEventListener('click', run);
-    clearButton.addEventListener('click', () => { output.textContent = ''; });
+    clearButton.addEventListener('click', () => {
+      output.textContent = '';
+    });
 
     editor.addEventListener('keydown', (event) => {
       if (event.key === 'Tab') {

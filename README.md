@@ -1,64 +1,153 @@
-# browser-dart
+# @live-codes/dart-wasm
 
-Proof of concept for running **Dart and Flutter** in the browser with **no
-compilation server**.
+Run **Dart** and **Flutter** entirely in the browser, with **no compilation server**.
 
-Type Dart — or a whole Flutter app — into the page, hit Run, and it compiles and
-executes entirely client-side. The **Dart / Flutter** toggle in the header
-switches engines.
+The [Dart team's client-side toolchain](https://pub.dev/packages/dartpad) — a dart2wasm worker holding
+DDC, the Dart analyzer, an in-memory file system and a subset of `dart pub`, plus a sandboxed iframe
+that executes the compiled output — behind a small promise-based API.
 
-## Run it
+```js
+import { createDartpad } from '@live-codes/dart-wasm';
 
-```bash
-node server.mjs        # http://localhost:8130
+const dartpad = await createDartpad({ container: document.body });
+
+await dartpad.run(`
+  void main() {
+    print('hello from Dart');
+  }
+`);
+
+dartpad.dispose();
 ```
 
-Any static host works — the server exists only because module workers and
-`WebAssembly.compileStreaming` need an http(s) origin and correct MIME types.
+A Flutter pad is the same call with `engine: 'flutter'` — see [Flutter](#flutter).
 
-## How it works
+## Install
 
-The Dart team ships a fully client-side toolchain inside the
-[`dartpad`](https://pub.dev/packages/dartpad) pub package as two independent
-asset directories, both vendored verbatim from **dartpad 0.0.9**:
+```sh
+npm install @live-codes/dart-wasm
+```
 
-| Variant | Source | Destination | Size |
-| --- | --- | --- | --- |
-| Dart | `web/dart/` | `public/dart/` | ~28 MB |
-| Flutter | `web/flutter/` | `public/flutter/` | ~225 MB |
+Or from a CDN, with no bundler:
 
-They share the same worker and DDC runtime, and consist of:
+```html
+<script src="https://cdn.jsdelivr.net/npm/@live-codes/dart-wasm/dist/dart-wasm.iife.js"></script>
+<script>
+  const dartpad = await DartWasm.createDartpad({ container: document.body });
+  await dartpad.run('void main() => print("hi");');
+</script>
+```
 
-| File | Role |
+The IIFE build sets `globalThis.DartWasm` and, with no `baseUrl`, loads its assets from the directory
+it was served from.
+
+## API
+
+### `createDartpad(options?) → Promise<Dartpad>`
+
+Boots the worker and returns an instance. Booting downloads the toolchain, so do it once per page and
+reuse the instance — that is also why a bad `baseUrl` fails here rather than at the first `run`.
+
+| option | default | meaning |
+| --- | --- | --- |
+| `engine` | `'dart'` | `'dart'` or `'flutter'` |
+| `baseUrl` | this module's directory | Where the assets are: a directory holding `dart/` and `flutter/`. In `dist/` that is already correct, so the default works |
+| `container` | a hidden element for `'dart'` | Where the sandbox iframe mounts. **Required for `'flutter'`**, since the app renders into the sandbox |
+| `onConsole` | – | `({ message }) => void` — program output |
+| `onError` | – | `({ message }) => void` — uncaught errors and unhandled rejections |
+| `onLog` | – | `({ message, source }) => void` — `pub` and compiler chatter, `source` is `'pub'` or `'compiler'` |
+| `onModule` | – | `({ code, map }) => void` — each DDC-compiled module, with its source map already parsed |
+
+### `dartpad.run(code, options?) → Promise<RunResult>`
+
+Writes the source, resolves dependencies if the pubspec changed, then compiles and runs it.
+
+| option | meaning |
 | --- | --- |
-| `worker.wasm` | dart2wasm build of the tool worker: DDC, the analyzer, an in-memory FS, a subset of `dart pub` |
-| `worker.js` / `worker.mjs` / `worker.support.js` | worker entry point and dart2wasm loader |
-| `sdk.tar` | files loaded into the worker's in-memory file system (the Dart SDK) |
-| `sandbox.js` | injected into an iframe; runs DDC-compiled modules and proxies console output |
-| `ddc_module_loader.js` | DDC's AMD-style module loader |
-| `dart_sdk.js` | precompiled DDC modules for the Dart SDK runtime (`dart:core`, …) |
-| `dart_sdk.js.map` | source map for `dart_sdk.js`, referenced by a `sourceMappingURL` comment |
-| `dart_stack_trace_mapper.js` | installed by `sandbox.js` as `$dartStackTraceUtility`; maps JS frames back to Dart source |
+| `dependencies` | pub.dev packages: `['http', 'collection: ^1.19.0']`, or `[{ name, constraint }]` |
+| `pubspec` | a whole pubspec instead of `dependencies` |
+| `file` | entrypoint filename, `'main.dart'` by default |
+| `mode` | one of `dartpad.modes`; defaults to the engine's natural mode |
 
-`dartpad-client.js` talks to the worker over its documented
-[JSON-RPC protocol](https://github.com/dart-lang/sdk/blob/main/pkg/dartpad/doc/worker-protocol.md):
+Returns `{ log, modules }` — the compiler log (empty when the program compiled) and the modules DDC
+emitted.
 
-1. Boot a module worker that imports `worker.js`, and receive a session `MessagePort`.
-2. `createWorkspace` — an isolated folder on the worker's file system.
-3. Write `pubspec.yaml` + `main.dart`, then `pub get` to produce a package config.
-4. Create the sandbox iframe and `connectSandbox` it to the workspace.
-5. `workspace/sandbox/run` — DDC compiles the entry point and the sandbox runs it.
-6. Console output and unhandled errors arrive as `workspace/sandbox/console`
-   and `workspace/sandbox/error` notifications.
+### `dartpad.runFile(path?, mode?)`
 
-The workspace persists between runs, so `pub get` happens once; the sandbox does
-not, so every run starts from clean application state.
+Compile and run a file already in the workspace, for multi-file pads.
 
-## Compiled output
+### `dartpad.writeFile(uri, text)` / `readFile(uri)` / `pub(command, args?)`
 
-Dart is compiled to JavaScript by DDC. The **Compiled JS** tab shows exactly
-what the worker sends into the sandbox — for the demo program, a single 5 KB
-module:
+The workspace. `pub` takes any of `get`, `add`, `remove`, `upgrade`, `downgrade`, `outdated`, `unpack`,
+so an "add package" box is a one-liner. `resolve(pubspec?)` writes a pubspec and runs `pub get` only
+when it has actually changed.
+
+### Properties
+
+`dartpad.engine`, `dartpad.modes`, `dartpad.assetBaseUrl`, `dartpad.container`.
+
+### `dartpad.dispose()`
+
+Terminates the worker and removes the sandbox. Browsers cannot unload a wasm module, so this drops
+references rather than freeing memory — use one instance per page and reuse it.
+
+## Flutter
+
+```js
+const dartpad = await createDartpad({
+  engine: 'flutter',
+  container: document.querySelector('#app'),   // the app renders in here
+});
+
+await dartpad.run(`
+  import 'package:flutter/material.dart';
+
+  void main() => runApp(const MaterialApp(home: Center(child: Text('hello'))));
+`);
+```
+
+Flutter is not a different code path: `baseUrl` points at `flutter/` instead of `dart/`, and the run
+mode is `'flutter'` rather than `'console'`. That mode compiles a generated wrapper around your
+entrypoint rather than your file directly — the wrapper is what calls `bootstrapEngine(runApp: …)`, so
+your `main()` runs inside the engine.
+
+Flutter's renderer, **CanvasKit**, is fetched at runtime from `https://www.gstatic.com/flutter-canvaskit/`.
+It is not part of this package, so a Flutter pad is not fully self-contained the way a Dart one is.
+
+## Assets, and how big this is
+
+The assets ship inside the package, laid out as `baseUrl` expects:
+
+```
+dist/dart/        28 MB   Dart-only toolchain, console run mode
+dist/flutter/    225 MB   the same worker plus the precompiled Flutter framework
+```
+
+Inside each: `worker.wasm` (DDC + analyzer + pub, dart2wasm), `sdk.tar` (the SDK, loaded into the
+worker's in-memory file system), `dart_sdk.js` and `dart_sdk.js.map` (precompiled SDK runtime),
+`ddc_module_loader.js`, `sandbox.js`, `dart_stack_trace_mapper.js`. Flutter adds `flutter_web.js`
+(123 MB — the framework, precompiled into DDC modules so only *your* code is recompiled), `flutter.js`
+and `assets/`.
+
+**253 MB unpacked is a lot.** A Dart pad pays only the 28 MB; Flutter pays all of it. If you serve
+both, treat Flutter as a second tier — lazy-load it, and warn before pulling 225 MB. Point `baseUrl`
+at a host you control, or at a CDN:
+
+```js
+const dartpad = await createDartpad({
+  baseUrl: 'https://cdn.jsdelivr.net/npm/@live-codes/dart-wasm/dist/',
+  container: document.body,
+});
+```
+
+Under a cross-origin-isolated page (`COEP: require-corp`) the host has to send matching CORS/CORP
+headers. jsDelivr does. `scripts/serve.mjs` does too, for local work.
+
+## What the compiled output looks like
+
+Dart is compiled by DDC to a `ddcLibraryBundle`: an AMD-style module that binds `defineLibrary` /
+`importLibrary` against the precompiled `dart_sdk.js` already loaded in the sandbox. It is **not** a
+standalone bundle — it needs the module loader and SDK runtime around it.
 
 ```js
 // Generated by DDC, the Dart Development Compiler (to JavaScript).
@@ -70,174 +159,84 @@ dartDevEmbedder.defineLibrary("file:///workspace/pad_1/main.dart", (function loa
   …
 ```
 
-It is a `ddcLibraryBundle`: an AMD-style module that binds `defineLibrary` /
-`importLibrary` against the precompiled `dart_sdk.js` runtime already loaded in
-the sandbox. It is *not* a standalone bundle — it needs the DDC module loader
-and SDK runtime around it.
-
-There is no public "give me the JavaScript" method in the protocol. The worker
-passes the module to the sandbox over an internal `loadModule` RPC, so the PoC
-captures it by wrapping `URL.createObjectURL` inside the sandbox — the point
-where `sandbox.js` turns the module into a loadable script. An embedding that
-needs the compiled output must do the same, or proxy the worker↔sandbox port.
-
-### Source maps
-
-**Yes, as of `dartpad` 0.0.7.** DDC registers a standard source map v3 in a
-trailing call, and the **Source map** tab shows the parsed result:
+Each module's source map is handed over in a trailing call, and `onModule` gives it to you parsed:
 
 ```js
-{dartSize: 409, sourceMapSize: 497}
-dartDevEmbedder.debugger.setSourceMap("main", '{"version":3,"sourceRoot":"",
-  "sources":["workspace/pad_1/main.dart"],"names":[],"mappings":"…","file":"main.js"}');
-//# sourceMappingURL=main.js.map
-//# sourceURL=main.js?0
+dartpad.onModule = ({ code, map }) => map?.sources;   // ['workspace/pad_1/main.dart']
 ```
 
-`sandbox.js` loads `dart_stack_trace_mapper.js`, wires it to DDC's source-map
-registry, and appends a generation counter to each module's `sourceURL` so a hot
-reload remaps against the new map instead of a cached one. Uncaught errors come
-back with Dart locations:
+There is no RPC that says "give me the JavaScript" — the worker sends modules straight into the
+sandbox. They are captured by wrapping `URL.createObjectURL` inside the sandbox, which is the point
+where `sandbox.js` turns a module into a loadable script.
 
-```
-Error: Bad state: async boom
-dart:sdk_internal 3805:11      throw_
-workspace/pad_1/main.dart 6:5  <fn>
-dart:sdk_internal 22100:11     internalCallback
-```
+Two things worth knowing before relying on the maps:
 
-Two caveats worth knowing before relying on this:
+- **A synchronous throw from `main()` is not mapped.** The mapper is wired into `window.onerror` and
+  `unhandledrejection`; `run` catches and rethrows only the message, so you get Dart's error text with
+  no frames. Asynchronously-thrown errors do come back with `workspace/pad_1/main.dart 6:5` frames.
+- **Devtools will not find the map.** The emitted `sourceMappingURL` points at a file that does not
+  exist; the map reaches the runtime mapper through `setSourceMap` only.
 
-- **Synchronous throws from `main()` are not mapped.** `renderError` — the only
-  caller of the mapper — is wired into `window.onerror` and `unhandledrejection`
-  alone. `rpcMethods.run` catches the error and rethrows bare `e.message`, so
-  `run()` rejects with the message and no frames. Asynchronously-thrown errors
-  get the full mapped trace. Patching `$dartpadRunModes.console` before
-  `sandbox.js` initialises would close this gap.
-- **The map is not discoverable by browser devtools.** `sourceMappingURL` points
-  at `main.js.map`, which does not exist — the map is handed to the runtime
-  mapper through `setSourceMap` only. An embedding that wants devtools-mapped
-  frames must rewrite the module with an inline `data:` sourceMappingURL.
+## Packages
 
-Releases before 0.0.7 passed `null` here (`sourceMapSize: 4` — the four bytes of
-the string `null`), which is why 0.0.6 stack traces showed `blob:` URLs.
+Adding a package needs the network, because `pub get` talks to pub.dev. Running already-resolved code
+does not. Flutter is the exception: its packages resolve against the `/pub-cache` bundled in the
+Flutter `sdk.tar`, so it works offline.
 
-## Flutter
-
-Flutter needs no changes to the client — `DartPad.create({ assetBaseUrl })` and
-`run(path, mode)` already cover it. Pointing `assetBaseUrl` at `public/flutter/`
-and running with `mode: 'flutter'` is the entire difference.
-
-The Flutter DartPad SDK declares two run modes (`console` and `flutter`). The
-`flutter` mode compiles a *generated wrapper* around your entrypoint instead of
-your file directly, and that wrapper is what starts the engine:
-
-```dart
-// workspace/pad_1/main.dart.flutter-wrapper.dart (generated)
-Future<void> main() async {
-  ui_web.urlStrategy = null;                 // avoids a SecurityError in srcdoc iframes
-  FlutterError.onError = (d) => _consoleError(d.toString().toJS);
-  await ui_web.bootstrapEngine(runApp: () {
-    entrypoint.main();                       // your main()
-  });
-}
+```js
+await dartpad.run(code, { dependencies: ['http', 'collection'] });
 ```
 
-So your `main()` runs inside the Flutter engine and the sandbox iframe *becomes*
-the app's viewport — which is why the PoC grows it to 440px for Flutter. Flutter
-renders through CanvasKit, fetched from `www.gstatic.com/flutter-canvaskit/` at
-runtime.
+DDC's library-bundle format compiles whole libraries — there is no tree shaking — so the module grows
+with everything you import:
 
-A Flutter pad also needs a pubspec that depends on the SDK:
+| Engine | Dependencies | Compiled module | Sources in map |
+| --- | --- | --- | --- |
+| Dart | none | 5.7 KB | 1 |
+| Dart | `collection` | 697 KB | 24 |
+| Dart | `collection` + `http` | 4.6 MB | 273 |
+| Flutter | `provider` | 617 KB | 15 |
 
-```yaml
-name: dartpad_poc
-environment:
-  sdk: '>=3.0.0 <4.0.0'
-dependencies:
-  flutter:
-    sdk: flutter
-```
+`http` is the expensive one because it depends on `package:web`, which pulls in the whole browser-API
+library set. Recompiles are cheap once packages are resolved — a re-run with `http` + `collection`
+took 3.2 s.
 
-`pub get` resolves that against the Flutter SDK inside the worker's in-memory
-file system (`flutterSdkPath`), and the SDK ships a pre-populated `/pub-cache`
-(added in 0.0.8) — it resolves the ~34 transitive packages without hitting the
-network.
-
-Source maps work here too, and cover the generated wrapper as well as your file:
-
-```
-1 module · 37.8 KB · source map → 2 sources (main.dart.flutter-wrapper.dart, main.dart)
-```
-
-**The catch is the download: ~225 MB, 8× the Dart SDK.** `flutter_web.js` alone
-is 123 MB (the precompiled framework, kept as DDC modules so that only your code
-is recompiled), `sdk.tar` is 64 MB, and `dart_sdk.js` is 15 MB. Flutter is
-therefore opt-in here: fetch it with `--variant flutter`, and the header toggle
-disables itself when the assets are absent. A real integration should treat this
-as a two-tier language — load the worker lazily and warn before pulling 225 MB.
-
-## Layout
-
-```
-index.html                    the proof-of-concept page
-dartpad-client.js             DartPad protocol client (reusable, dependency-free)
-server.mjs                    minimal static server for local development
-scripts/fetch-sdk.mjs         re-vendor SDK assets from a pinned dartpad release
-public/dart/                  vendored Dart toolchain (~28 MB)
-public/flutter/               vendored Flutter toolchain (~225 MB, opt-in)
-```
-
-## Refreshing the assets
-
-```bash
-node scripts/fetch-sdk.mjs                         # dart only (default)
-node scripts/fetch-sdk.mjs --variant flutter       # add the Flutter SDK (~225 MB)
-node scripts/fetch-sdk.mjs --variant all --force   # both, ignoring the cached archive
-```
-
-`scripts/fetch-sdk.mjs` pins the `dartpad` version and its published sha256.
-
-**Why 0.0.9 and not the latest?** `dartpad` 0.0.10 stopped bundling prebuilt
-`web/` assets in the published package and moved to a `dart run dartpad setup`
-command, which needs a local Dart SDK. 0.0.9 is the newest release that still
-ships the assets in this layout, so it is the newest one we can vendor without
-adding Dart to the toolchain.
-
-The forward path is the published release artifact rather than the pub package
-(documented in `pkg/dartpad/doc/releases.md`):
-
-```
-https://storage.googleapis.com/dart-archive/channels/<channel>/raw/latest/dartpad/dartpad.zip
-https://storage.googleapis.com/dart-archive/channels/<channel>/release/latest/dartpad/dartpad.zip
-```
-
-That is the CDN the Dart team points at, it ships a `.sha256sum`, and it is what
-0.0.10+ expects — but its layout differs from `web/dart/` (no `dart/` subfolder
-on the `main` channel, `sandbox_runtime.js` instead of `ddc_module_loader.js`)
-and is still in flux, so the migration is deferred.
+Not supported: build hooks, **Flutter plugins**, Flutter assets, and `build_runner` code generation.
+The target is web, so `dart:io` and anything needing a VM is out.
 
 ## Requirements
 
-- A static origin (see above).
-- **Chrome/Edge 130+**, or a browser with WebAssembly GC and the JS String
-  builtins proposal. The worker feature-detects both; Safari and Firefox are
-  not yet supported.
+**Chrome/Edge 130+**, or a browser with WebAssembly GC and the JS String builtins proposal — the
+worker feature-detects both and refuses to start without them. Safari and Firefox are not there yet.
+The runtime also needs a DOM: there is no Node build, because the sandbox is an iframe.
 
-## Notes for a real integration
+## Relationship to LiveCodes
 
-- First load pulls ~28 MB for Dart and ~225 MB for Flutter; `dart_sdk.js`,
-  `flutter_web.js` and `worker.wasm` should be cached aggressively and both
-  flagged as large downloads. The payload shrinks between releases — `sdk.tar`
-  went from 11.2 MB (0.0.6) to 8.5 MB (0.0.9).
-- `pub get` resolves through pub.dev for Dart, but Flutter resolves against the
-  pre-populated `/pub-cache` bundled in `sdk.tar`, so it works offline.
-- Source-mapped stack traces work from 0.0.7, but only for errors that reach
-  `window.onerror` / `unhandledrejection`; a synchronous throw from `main()`
-  arrives as a message with no frames.
-- The SDK also exposes hot reload/restart and the Dart analyzer (LSP) — none of
-  which this PoC uses. It runs a fresh sandbox per run instead, which is the
-  cleanest semantic for a playground but throws away hot-reload state.
-- `dartpad` is an unlisted `0.0.x` preview whose asset layout is still moving,
-  so pin the version and vendor the bytes rather than fetching a CDN path at
-  runtime.
+LiveCodes consumes this the way it consumes `@live-codes/browser-haskell` and friends: the
+`./dist/*` export exists so a host can resolve `@live-codes/dart-wasm@<version>/dist/` and point
+`baseUrl` at it. The language definition itself lives in LiveCodes; this package supplies the runtime,
+the assets and the protocol client.
+
+## Development
+
+```sh
+npm run fetch            # vendor both SDK asset trees into dist/ (253 MB)
+npm run fetch:dart       # just Dart (28 MB)
+npm run build            # bundle src/ into dist/
+npm run serve            # http://localhost:8138/poc/
+npm run check-package    # what `npm publish` would actually contain
+```
+
+`poc/index.html` is the proof of concept: an editor, a console, and tabs for the compiled JavaScript
+and its source map, with a Dart/Flutter toggle.
+
+`node scripts/fetch-sdk.mjs --variant all --force` re-downloads from the pub.dev archive pinned in
+`sdk.lock.json`; the archive's sha256 is verified before anything is extracted. `dist/dart` and
+`dist/flutter` are committed, because the whole point of the package is to ship them — `npm run build`
+deliberately leaves them alone.
+
+## License
+
+**MIT** for everything we wrote. The Dart and Flutter toolchain in `dist/` is the Dart project's work
+under **BSD-3-Clause**, redistributed unmodified; see [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md).
+Nothing here is copyleft, so nothing about it constrains programs you compile.
