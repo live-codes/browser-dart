@@ -343,8 +343,10 @@ export class Dartpad {
    * @param {string} [options.mode]
    */
   async run(code, { dependencies, pubspec, file = 'main.dart', mode } = {}) {
-    const text = pubspec ?? (dependencies ? buildPubspec(this.#spec, dependencies) : undefined);
-    if (text) await this.resolve(text);
+    // Always resolve, even when the caller asked for nothing: DDC needs a package config, and
+    // that needs a pubspec to exist. `resolve` is memoised, so this costs nothing after the
+    // first run — which also means a pad with no dependencies only pays for one `pub get`.
+    await this.resolve(pubspec ?? buildPubspec(this.#spec, dependencies ?? []));
     await this.#session.writeFile(file, code);
     return this.runFile(file, mode);
   }

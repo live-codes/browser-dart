@@ -56,7 +56,13 @@ http
         const hint = pathname.startsWith('/dist/')
           ? '\nassets missing — run: npm run fetch\n'
           : '';
-        response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        // CORS on 404s too. The client probes `${asset}.gz` and falls back when that 404s;
+        // a 404 without CORS headers would be a *rejection* instead, which is a different
+        // code path and not what a CDN does.
+        response.writeHead(404, {
+          'content-type': 'text/plain; charset=utf-8',
+          'access-control-allow-origin': '*',
+        });
         response.end(`not found: ${pathname}${hint}`);
         return;
       }

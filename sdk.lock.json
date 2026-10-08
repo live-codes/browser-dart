@@ -7,11 +7,12 @@
   "gzip": [
     "worker.wasm",
     "sdk.tar",
+    "dart_sdk.js",
     "dart_sdk.js.map",
     "flutter_web.js",
     "flutter_web.js.map"
   ],
-  "gzipNote": "Shipped gzipped so the unpacked package stays under jsDelivr's 150 MB limit. Each is inflated before use: worker.wasm and sdk.tar through a fetch shim in the worker, flutter_web.js through a wrapper around $dartLoader.forceLoadScript. The .map files are inert until devtools asks for them. Everything else stays raw, so nothing the SDK loads by other means has to change.",
+  "gzipNote": "Shipped gzipped so the unpacked package stays under jsDelivr's 150 MB limit. Each is inflated before use: worker.wasm and sdk.tar through a fetch shim in the worker, dart_sdk.js and flutter_web.js through the sandbox's $dartpadSandboxScripts list, and anything the DDC loader pulls later through $dartLoader.forceLoadScript. The .map files are inert until devtools asks for them. Everything else stays raw, so nothing the SDK loads by other means has to change.",
   "variants": {
     "dart": {
       "source": "web/dart",

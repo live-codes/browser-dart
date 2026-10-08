@@ -58,6 +58,10 @@ export const fetchShimSource = (assetBase) => `
           'content-type': url.slice(-5) === '.wasm' ? 'application/wasm' : 'application/octet-stream',
         },
       });
+    }, function () {
+      // A host that answers 404 without CORS headers makes this probe *reject* rather than
+      // resolve with ok === false, so the fallback has to be wired to the rejection too.
+      return realFetch(input, init);
     });
   };
 })();
