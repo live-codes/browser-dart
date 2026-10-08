@@ -11,8 +11,15 @@ import { setDefaultAssetBase } from './base.js';
 setDefaultAssetBase(new URL('./', import.meta.url));
 
 export {
-  Dartpad,
+  // the two halves, for compiling and running in different places
+  createCompiler,
+  Compiler,
+  createRunner,
+  Runner,
+  // both halves together, for the simple case
   createDartpad,
+  Dartpad,
+  // dart-specific helpers
   ENGINES,
   ENGINE_IDS,
   buildPubspec,

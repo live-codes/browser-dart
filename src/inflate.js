@@ -92,14 +92,7 @@ export const sandboxScriptsGuardSource = (assetBase) => `
       if (!response.ok) return null;
       var stream = response.body.pipeThrough(new DecompressionStream('gzip'));
       return new Response(stream).text().then(function (code) {
-        // Flagged so the module-capture hook does not mistake this for a compiled module:
-        // flutter_web.js is a DDC bundle too, and 129 MB of it does not belong in that list.
-        self.__dartWasmInflatingBlob = true;
-        try {
-          return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
-        } finally {
-          self.__dartWasmInflatingBlob = false;
-        }
+        return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
       });
     }).catch(function () { return null; });
   };

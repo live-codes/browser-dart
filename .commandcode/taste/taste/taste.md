@@ -5,4 +5,5 @@
 - Prefers build artifacts to be committed to the repository, including large vendored SDK/asset trees, rather than gitignored. Confidence: 0.6
 - Prefers client-side / serverless solutions — features should run entirely in the browser with no backend or server-side compilation ("no servers"). Confidence: 0.6
 - Treats access to generated/compiled output and source maps as first-class requirements: wants the emitted code (e.g. the compiled JS) exposed and wants source-mapped stack traces, not opaque blob URLs. Confidence: 0.5
+- Pushes back on architectural constraints stated without evidence ("why does it need X? can't we do Y instead?"), and expects claims to be verified against the actual source/behavior before they are used to justify a design. Confidence: 0.5
 - Cares about published packages staying servable from public CDNs and their size limits (e.g. jsDelivr's 150 MB unpacked cap), and is willing to accept runtime cost/complexity — shipping assets compressed and inflating them before use — rather than dropping features or assets to fit. Confidence: 0.55

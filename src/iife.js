@@ -9,11 +9,15 @@
 
 import { setDefaultAssetBase } from './base.js';
 import {
+  Compiler,
   Dartpad,
-  createDartpad,
   ENGINES,
   ENGINE_IDS,
+  Runner,
   buildPubspec,
+  createCompiler,
+  createDartpad,
+  createRunner,
   dependencyLines,
   parseSourceMap,
 } from './core.js';
@@ -29,8 +33,12 @@ const scriptUrl = (() => {
 if (scriptUrl) setDefaultAssetBase(new URL('./', scriptUrl));
 
 globalThis.DartWasm = {
-  Dartpad,
+  createCompiler,
+  Compiler,
+  createRunner,
+  Runner,
   createDartpad,
+  Dartpad,
   ENGINES,
   ENGINE_IDS,
   buildPubspec,

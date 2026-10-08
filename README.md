@@ -53,10 +53,10 @@ reuse the instance — that is also why a bad `baseUrl` fails here rather than a
 | `engine` | `'dart'` | `'dart'` or `'flutter'` |
 | `baseUrl` | this module's directory | Where the assets are: a directory holding `dart/` and `flutter/`. In `dist/` that is already correct, so the default works |
 | `container` | a hidden element for `'dart'` | Where the sandbox iframe mounts. **Required for `'flutter'`**, since the app renders into the sandbox |
-| `onConsole` | – | `({ message }) => void` — program output |
+| `onConsole` | – | `({ level, message }) => void` — program output |
 | `onError` | – | `({ message }) => void` — uncaught errors and unhandled rejections |
 | `onLog` | – | `({ message, source }) => void` — `pub` and compiler chatter, `source` is `'pub'` or `'compiler'` |
-| `onModule` | – | `({ code, map }) => void` — each DDC-compiled module, with its source map already parsed |
+| `onModule` | – | `({ name, code, map }) => void` — each DDC-compiled module, with its source map already parsed |
 
 ### `dartpad.run(code, options?) → Promise<RunResult>`
 
@@ -90,6 +90,66 @@ when it has actually changed.
 
 Terminates the worker and removes the sandbox. Browsers cannot unload a wasm module, so this drops
 references rather than freeing memory — use one instance per page and reuse it.
+
+## Compiling and running separately
+
+`createDartpad` is a convenience: it wires the two halves together for when compiling and running
+happen in the same place. When they do not, use the halves directly.
+
+```js
+// Wherever you like — a Worker, say. No DOM is involved.
+const compiler = await createCompiler({ baseUrl });
+const program = await compiler.compile('void main() => print("hi");');
+// program.modules      DDC's output, with source maps already parsed
+// program.libraryUri   the entrypoint to call main() on
+
+// The document the code should run in.
+const runner = await createRunner({ engine, baseUrl, iframe: resultIframe });
+await runner.run(program);
+```
+
+Passing `iframe` is the point of the split: the compiled Dart runs **in that document**, with the DOM
+and the markup already in it — not in a nested sandbox of its own. (Construct a `Runner` without an
+`iframe` and it makes one, at which point your HTML and CSS tabs are a document away, which is the
+behaviour `createDartpad` has.)
+
+`createCompiler` creates no elements and touches no globals, so it runs in a Web Worker. Only
+`createRunner` needs a document.
+
+### `createCompiler(options?) → Promise<Compiler>`
+
+Boots the worker and returns a compiler. Options are `engine`, `baseUrl` and `onLog`.
+
+| member | meaning |
+| --- | --- |
+| `compile(code, options?) → Promise<Program>` | takes `dependencies`, `pubspec`, `file`, `mode`, exactly as `dartpad.run` |
+| `compileFile(path?, mode?)` | compile a file already in the workspace |
+| `writeFile` / `readFile` / `pub` / `resolve` | the workspace |
+| `engine`, `modes`, `assetBaseUrl` | |
+| `dispose()` | terminates the worker |
+
+`compile` resolves the pubspec first, and only runs `pub get` when it has actually changed — so the
+network is paid once per compiler.
+
+A `Program` is `{ engine, mode, modules, libraryUri, log }`, and it is **not** self-contained: the
+modules bind against the engine's precompiled runtime, so running one needs a `Runner` and the same
+engine's assets. A `Program` is data, so it can be posted between contexts.
+
+### `createRunner(options?) → Promise<Runner>`
+
+Puts the SDK's sandbox in a document and drives it. Options are `engine`, `baseUrl`, `container`,
+`iframe`, `onConsole` and `onError` — give `container` to have a sandbox created, or `iframe` to use
+one you already have.
+
+| member | meaning |
+| --- | --- |
+| `run(program, options?)` | load the program and call `main()` |
+| `engine`, `modes`, `assetBaseUrl`, `iframe` | |
+| `dispose()` | removes the sandbox, if it made one |
+
+The modules load in the order the compiler produced them, then the entrypoint runs. This is
+deliberately not re-runnable on the same sandbox: `runMain` is not meant to be called twice, which is
+why `createDartpad` starts a fresh one per run.
 
 ## Flutter
 
@@ -245,6 +305,17 @@ LiveCodes consumes this the way it consumes `@live-codes/browser-haskell` and fr
 `./dist/*` export exists so a host can resolve `@live-codes/dart-wasm@<version>/dist/` and point
 `baseUrl` at it. The language definition itself lives in LiveCodes; this package supplies the runtime,
 the assets and the protocol client.
+
+For the integration shape LiveCodes wants — compile off the main thread, run in the results page —
+use `createCompiler` and `createRunner` rather than `createDartpad`:
+
+- `createCompiler` runs in the compiler worker, where there is no DOM, and returns a `Program`.
+- `createRunner({ iframe: resultIframe })` runs it in the results page, so Dart code sees the HTML
+  and CSS tabs beside it rather than a sandbox of its own.
+
+Two things to get right: pass `baseUrl` explicitly, because a bundler rewrites `import.meta.url` to
+the app's url and the default asset base would then point at the wrong place; and give Flutter a
+visible `container`, since it renders into the sandbox.
 
 ## Development
 
