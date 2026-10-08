@@ -90,7 +90,7 @@ export class Compiler {
       workspaceFolder,
       onLog,
     });
-    await compiler.#connectSandbox();
+    compiler.#sandboxId = await compiler.#connectSandbox();
     return compiler;
   }
 
@@ -123,7 +123,7 @@ export class Compiler {
       workspaceId: this.#workspaceId,
       port: channel.port2,
     });
-    this.#sandboxId = sandboxId;
+    return sandboxId;
   }
 
   /** `'dart'` or `'flutter'`. */
@@ -223,6 +223,20 @@ export class Compiler {
     capture.modules = [];
     capture.libraryUri = null;
     capture.mode = null;
+
+    // A sandbox runs one entrypoint, so every compile gets a fresh one — reusing the old sandbox
+    // makes the second `sandbox/run` stall. The previous one is closed first so the worker can
+    // release it.
+    if (this.#sandboxId !== undefined) {
+      await this.#rpc
+        .request('workspace/sandbox/close', {
+          workspaceId: this.#workspaceId,
+          sandboxId: this.#sandboxId,
+        })
+        .catch(() => {});
+      this.#sandboxId = undefined;
+    }
+    this.#sandboxId = await this.#connectSandbox();
 
     const { log } = await this.#rpc.request('workspace/sandbox/run', {
       workspaceId: this.#workspaceId,
