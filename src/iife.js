@@ -14,11 +14,13 @@ import {
   ENGINES,
   ENGINE_IDS,
   Runner,
+  Runtime,
   buildPubspec,
   createCompiler,
   createDartpad,
   createRunner,
   dependencyLines,
+  loadRuntime,
   parseSourceMap,
 } from './core.js';
 
@@ -37,6 +39,8 @@ globalThis.DartWasm = {
   Compiler,
   createRunner,
   Runner,
+  loadRuntime,
+  Runtime,
   createDartpad,
   Dartpad,
   ENGINES,

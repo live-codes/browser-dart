@@ -16,6 +16,9 @@ export {
   Compiler,
   createRunner,
   Runner,
+  // the run half for a document you already have
+  loadRuntime,
+  Runtime,
   // both halves together, for the simple case
   createDartpad,
   Dartpad,

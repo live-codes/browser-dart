@@ -21,6 +21,7 @@ import { assetUrlFor, buildPubspec, engineOf } from './engines.js';
 export { ENGINES, ENGINE_IDS, buildPubspec, dependencyLines, parseSourceMap } from './engines.js';
 export { Compiler, createCompiler } from './compiler.js';
 export { Runner, createRunner } from './runner.js';
+export { Runtime, loadRuntime } from './runtime.js';
 
 /** A pad renders into the sandbox, so Flutter needs somewhere visible to put it. */
 function containerFor(spec, container) {
