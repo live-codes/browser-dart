@@ -80,7 +80,7 @@ export function buildPubspec(engine, dependencies = []) {
   return [
     'name: dartpad_pad',
     'environment:',
-    "  sdk: '>=3.0.0 <4.0.0'",
+    "  sdk: '>=3.9.0 <4.0.0'",
     'dependencies:',
     ...(spec.id === 'flutter' ? ['  flutter:', '    sdk: flutter'] : []),
     ...dependencyLines(dependencies),
