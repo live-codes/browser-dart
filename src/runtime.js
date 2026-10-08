@@ -43,6 +43,13 @@ const SCRIPTS = {
   ],
 };
 
+/**
+ * CanvasKit is not vendored with the SDK. DartPad's sandbox loads the pinned build from gstatic,
+ * so the engine is pointed at the same one.
+ */
+const CANVASKIT_BASE_URL =
+  'https://www.gstatic.com/flutter-canvaskit/c3edad8766a937c49d66380894017cad401aab51/';
+
 /** One load per engine and asset base, however many times `loadRuntime` is called. */
 const RUNTIMES = new Map();
 
@@ -101,6 +108,37 @@ export class Runtime {
     return embedder.runMain(libraryUri, options);
   }
 
+  /**
+   * Boot the Flutter engine around `runMain`, the way the SDK's `runflutter` does.
+   *
+   * Flutter's compiled entrypoint is a wrapper that only works once the engine exists, and the
+   * engine needs a host element and an asset base that `runMain` alone does not set up — without
+   * this the engine starts but the app never renders.
+   */
+  async #runFlutter(libraryUri) {
+    const scope = this.#scope;
+    const loader = scope._flutter?.loader;
+    if (!loader) throw new Error('dart-wasm: flutter.js is not loaded');
+
+    const entrypointUrl = scope.URL.createObjectURL(
+      new scope.Blob([`self.dartDevEmbedder.runMain(${JSON.stringify(libraryUri)}, {});`], {
+        type: 'application/javascript',
+      }),
+    );
+    try {
+      const engineInitializer = await new Promise((resolve) => {
+        loader.loadEntrypoint({ entrypointUrl, onEntrypointLoaded: resolve });
+      });
+      const appRunner = await engineInitializer.initializeEngine({
+        canvasKitBaseUrl: CANVASKIT_BASE_URL,
+        assetBase: this.#assetBaseUrl.href,
+      });
+      await appRunner.runApp();
+    } finally {
+      scope.URL.revokeObjectURL(entrypointUrl);
+    }
+  }
+
   /** Register a compiled program's modules, then run its entrypoint. */
   async run(program) {
     if (!program?.libraryUri) {
@@ -109,6 +147,7 @@ export class Runtime {
     for (const module of program.modules ?? []) {
       await this.loadModule(module);
     }
+    if (program.mode === 'flutter') return this.#runFlutter(program.libraryUri);
     return this.runMain(program.libraryUri);
   }
 }
