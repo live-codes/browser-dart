@@ -165,32 +165,36 @@ export class RpcClient {
 /**
  * Boots the dart2wasm worker and hands back a session port.
  *
- * The worker is started from a blob module that imports `worker.js` from its real location, so
- * `import.meta.url` inside the worker still resolves `worker.wasm`, `sdk.tar` and friends relative
- * to the asset directory — while `new Worker` still gets a same-origin script it will accept.
+ * The worker is started from a same-origin blob so `new Worker` always accepts it, and it reaches
+ * `worker.js` with a dynamic `import()` rather than a static one, so `import.meta.url` inside
+ * `worker.js` still resolves `worker.wasm`, `sdk.tar` and friends relative to the asset directory.
+ *
+ * A *module* worker is deliberately not used. This runs inside LiveCodes' compile worker, which is
+ * a `data:` URL worker with an opaque origin, and Chrome refuses to create a module worker from an
+ * opaque origin — blob or not. A classic worker can still `import()` the module.
  */
 export function startWorker({ assetBaseUrl, options = {} } = {}) {
   const baseUrl = resolveAssetBaseUrl(assetBaseUrl);
   const workerUrl = new URL('worker.js', baseUrl).href;
 
   const bootstrap = `
-    import { Worker } from ${JSON.stringify(workerUrl)};
     // worker.js fetches worker.wasm inside create(), and the Dart side fetches sdk.tar once it is
-    // running. Both go through globalThis.fetch, so shimming it here covers both — installing it
-    // after the import is fine, because worker.js only fetches when it is called.
+    // running. Both go through globalThis.fetch, so shimming it here covers both.
     ${fetchShimSource(baseUrl.href)}
-    try {
-      const worker = await Worker.create(${JSON.stringify(options)});
-      const { port1, port2 } = new MessageChannel();
-      worker.session(port1);
-      self.postMessage({ action: 'session' }, [port2]);
-    } catch (error) {
-      self.postMessage({ action: 'error', message: String(error?.stack ?? error) });
-    }
+    import(${JSON.stringify(workerUrl)})
+      .then(({ Worker }) => Worker.create(${JSON.stringify(options)}))
+      .then((worker) => {
+        const { port1, port2 } = new MessageChannel();
+        worker.session(port1);
+        self.postMessage({ action: 'session' }, [port2]);
+      })
+      .catch((error) => {
+        self.postMessage({ action: 'error', message: String(error?.stack ?? error) });
+      });
   `;
 
   const blobUrl = URL.createObjectURL(new Blob([bootstrap], { type: 'text/javascript' }));
-  const worker = new Worker(blobUrl, { type: 'module', name: 'dartpad-worker' });
+  const worker = new Worker(blobUrl);
 
   return new Promise((resolve, reject) => {
     worker.onmessage = (event) => {

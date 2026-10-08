@@ -32,7 +32,14 @@ const scriptUrl = (() => {
   return undefined;
 })();
 
-if (scriptUrl) setDefaultAssetBase(new URL('./', scriptUrl));
+if (scriptUrl) {
+  try {
+    setDefaultAssetBase(new URL('./', scriptUrl));
+  } catch {
+    // A data: or blob: worker has no hierarchical URL to resolve against, so there is no base to
+    // inherit. Callers loading the IIFE that way must pass an absolute `baseUrl`.
+  }
+}
 
 globalThis.DartWasm = {
   createCompiler,
