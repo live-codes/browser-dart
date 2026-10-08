@@ -18,6 +18,28 @@
 
 export const GZIP_EXTENSION = '.gz';
 
+/**
+ * The assets that actually ship gzipped, mirroring `sdk.lock.json`'s `gzip` list. Everything else
+ * is served as it is, so asking for its `.gz` would only ever be a 404.
+ */
+const GZIPPED_ASSETS = [
+  'worker.wasm',
+  'sdk.tar',
+  'dart_sdk.js',
+  'dart_sdk.js.map',
+  'flutter_web.js',
+  'flutter_web.js.map',
+];
+
+const GZIPPED_ASSETS_JSON = JSON.stringify(GZIPPED_ASSETS);
+
+/** The file name at the end of a url, with any query string dropped. */
+const assetName = (url) => {
+  const query = url.indexOf('?');
+  const path = query === -1 ? url : url.slice(0, query);
+  return path.slice(path.lastIndexOf('/') + 1);
+};
+
 const urlOf = (input) => {
   if (typeof input === 'string') return input;
   if (input instanceof URL) return input.href;
@@ -25,9 +47,11 @@ const urlOf = (input) => {
   return undefined;
 };
 
-/** An asset under `assetBase` that is not itself already a compressed one. */
+/** Whether `url` is one of the gzipped assets, under `assetBase`. */
 export const isGzippedAsset = (url, assetBase) =>
-  typeof url === 'string' && url.startsWith(assetBase) && !url.endsWith(GZIP_EXTENSION);
+  typeof url === 'string' &&
+  url.startsWith(assetBase) &&
+  GZIPPED_ASSETS.includes(assetName(url));
 
 /**
  * Source for the `fetch` shim, installed in the worker and in the sandbox iframe.
@@ -44,11 +68,16 @@ export const fetchShimSource = (assetBase) => `
 (function () {
   var realFetch = fetch.bind(globalThis);
   var base = ${JSON.stringify(assetBase)};
+  var gzipped = ${GZIPPED_ASSETS_JSON};
+  var isGzipped = function (url) {
+    var path = url.split('?')[0];
+    return gzipped.indexOf(path.slice(path.lastIndexOf('/') + 1)) !== -1;
+  };
   globalThis.fetch = function (input, init) {
     var url = typeof input === 'string' ? input
       : input instanceof URL ? input.href
       : input && input.url;
-    if (typeof url !== 'string' || url.indexOf(base) !== 0 || url.slice(-3) === '.gz') {
+    if (typeof url !== 'string' || url.indexOf(base) !== 0 || !isGzipped(url)) {
       return realFetch(input, init);
     }
     return realFetch(url + '.gz', init).then(function (compressed) {
@@ -87,7 +116,14 @@ export const sandboxScriptsGuardSource = (assetBase) => `
   var base = ${JSON.stringify(assetBase)};
   var current;
 
+  var gzipped = ${GZIPPED_ASSETS_JSON};
+  var isGzipped = function (url) {
+    var path = url.split('?')[0];
+    return gzipped.indexOf(path.slice(path.lastIndexOf('/') + 1)) !== -1;
+  };
+
   var inflate = function (url) {
+    if (!isGzipped(url)) return Promise.resolve(null);
     return fetch(url + '.gz').then(function (response) {
       if (!response.ok) return null;
       var stream = response.body.pipeThrough(new DecompressionStream('gzip'));
