@@ -19,6 +19,7 @@ import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const lock = JSON.parse(await readFile(join(root, 'sdk.lock.json'), 'utf8'));
@@ -91,6 +92,44 @@ async function dirBytes(dir) {
   return total;
 }
 
+/** A file may be stored plainly or gzipped; either satisfies the lock. */
+async function storedPath(destination, file) {
+  for (const candidate of [file, `${file}.gz`]) {
+    const info = await stat(join(destination, candidate)).catch(() => null);
+    if (info?.isFile()) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Gzips the assets named in `lock.gzip` and removes the originals.
+ *
+ * jsDelivr refuses a package whose files total more than 150 MB, and uncompressed this one is
+ * ~265 MB. The compressed copies are inflated before use, which is why only files we can
+ * intercept are listed: worker.wasm and sdk.tar arrive through `fetch`, and flutter_web.js
+ * through `$dartLoader.forceLoadScript`.
+ */
+async function compress(destination) {
+  let before = 0;
+  let after = 0;
+
+  for (const file of lock.gzip) {
+    const path = join(destination, file);
+    const info = await stat(path).catch(() => null);
+    if (!info?.isFile()) continue;
+
+    const compressed = gzipSync(await readFile(path), { level: 9 });
+    await writeFile(`${path}.gz`, compressed);
+    await rm(path, { force: true });
+
+    before += info.size;
+    after += compressed.length;
+    console.log(`  gz   ${file} ${mib(info.size)} -> ${mib(compressed.length)}`);
+  }
+
+  return { before, after };
+}
+
 async function vendor(name, archive, scratch) {
   const variant = lock.variants[name];
   const destination = resolve(root, variant.destination);
@@ -108,8 +147,8 @@ async function vendor(name, archive, scratch) {
 
   const missing = [];
   for (const file of variant.required) {
-    const info = await stat(join(destination, file)).catch(() => null);
-    if (!info?.isFile()) missing.push(file);
+    if (await storedPath(destination, file)) continue;
+    missing.push(file);
   }
   if (missing.length > 0) {
     throw new Error(
@@ -118,10 +157,13 @@ async function vendor(name, archive, scratch) {
     );
   }
 
+  const { before, after } = await compress(destination);
+
   const count = (await readdir(destination, { recursive: true })).length;
+  const saved = before > 0 ? `, ${mib(before)} of gzipped assets -> ${mib(after)}` : '';
   console.log(
     `  ok   ${name.padEnd(7)} -> ${relative(root, destination).replace(/\\/g, '/')} ` +
-      `(${count} entries, ${mib(await dirBytes(destination))})`,
+      `(${count} entries, ${mib(await dirBytes(destination))}${saved})`,
   );
 }
 

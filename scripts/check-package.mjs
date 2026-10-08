@@ -28,23 +28,38 @@ const groups = [
 let failed = false;
 let total = 0;
 
+/** A file may be shipped plainly or gzipped; either satisfies the lock. */
+const statStored = (relative) => {
+  for (const candidate of [relative, `${relative}.gz`]) {
+    const stats = fs.statSync(path.join(root, candidate), { throwIfNoEntry: false });
+    if (stats?.isFile()) return { relative: candidate, size: stats.size };
+  }
+  return null;
+};
+
 for (const group of groups) {
   const present = [];
   const missing = [];
+  let compressed = 0;
 
   for (const relative of group.files) {
-    const stats = fs.statSync(path.join(root, relative), { throwIfNoEntry: false });
-    if (stats?.isFile()) {
-      present.push(stats.size);
-      total += stats.size;
-    } else {
+    const stored = statStored(relative);
+    if (!stored) {
       missing.push(relative);
+      continue;
     }
+    present.push(stored.size);
+    total += stored.size;
+    if (stored.relative.endsWith('.gz')) compressed += 1;
   }
 
   const bytes = present.reduce((sum, size) => sum + size, 0);
   const status = missing.length === 0 ? 'ok  ' : 'MISS';
-  const detail = missing.length === 0 ? `${(bytes / 1048576).toFixed(1)} MB, ${present.length} files` : `${missing.length} missing`;
+  const detail =
+    missing.length === 0
+      ? `${(bytes / 1048576).toFixed(1)} MB, ${present.length} files` +
+        (compressed > 0 ? ` (${compressed} gzipped)` : '')
+      : `${missing.length} missing`;
   console.log(`  ${status} ${group.label.padEnd(8)} ${detail}`);
 
   if (missing.length > 0) {

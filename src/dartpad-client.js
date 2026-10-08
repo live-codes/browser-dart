@@ -16,6 +16,8 @@
  *   { payload: "<json>", port?: MessagePort, bytes?: Uint8Array }
  */
 
+import { createScriptInflater, fetchShimSource, sandboxScriptsGuardSource } from './inflate.js';
+
 /** Notifications the worker emits while code executes inside the sandbox. */
 export const SANDBOX_NOTIFICATIONS = {
   console: 'workspace/sandbox/console',
@@ -146,6 +148,10 @@ export function startWorker({ assetBaseUrl, options = {} } = {}) {
 
   const bootstrap = `
     import { Worker } from ${JSON.stringify(workerUrl)};
+    // worker.js fetches worker.wasm inside create(), and the Dart side fetches sdk.tar once
+    // it is running. Both go through globalThis.fetch, so shimming it here covers both —
+    // installing it after the import is fine, because worker.js only fetches when called.
+    ${fetchShimSource(baseUrl.href)}
     try {
       const worker = await Worker.create(${JSON.stringify(options)});
       const { port1, port2 } = new MessageChannel();
@@ -186,6 +192,9 @@ const MODULE_CAPTURE_HOOK = `
     URL.createObjectURL = function (blob) {
       const url = createObjectURL(blob);
       try {
+        // The inflater hands the SDK its own DDC bundles as blobs; those are not the ones
+        // this is looking for.
+        if (self.__dartWasmInflatingBlob) return url;
         if (blob && typeof blob.text === 'function' && /javascript/.test(blob.type)) {
           blob.text().then(function (code) {
             window.parent.postMessage({ action: 'module', code: code }, '*');
@@ -210,7 +219,9 @@ export function createSandbox({
   timeout = 180_000,
   onModule,
 } = {}) {
-  const sandboxUrl = new URL('sandbox.js', resolveAssetBaseUrl(assetBaseUrl)).href;
+  const baseUrl = resolveAssetBaseUrl(assetBaseUrl);
+  const sandboxUrl = new URL('sandbox.js', baseUrl).href;
+  const inflateScript = createScriptInflater({ assetBase: baseUrl.href });
 
   const iframe = document.createElement('iframe');
   iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
@@ -222,6 +233,32 @@ export function createSandbox({
     settle = { resolve, reject };
   });
 
+  /**
+   * `$dartLoader.forceLoadScript` is the single choke point every DDC module goes through,
+   * and it is a plain global installed by `ddc_module_loader.js`. It exists by the time the
+   * sandbox connects, because `sandbox.js` loads that file before it posts `connect` — which
+   * is why this runs from the parent, on the iframe's realm, rather than in the srcdoc.
+   *
+   * This is how `flutter_web.js` — 129 MB, and the one file that has to be compressed for
+   * the package to fit on a CDN — reaches the inflater.
+   *
+   * @param {Window} realm the sandbox iframe's window
+   */
+  function wrapScriptLoader(realm) {
+    const loader = realm?.$dartLoader;
+    if (!loader || typeof loader.forceLoadScript !== 'function' || loader.__dartWasmInflating) {
+      return;
+    }
+
+    const original = loader.forceLoadScript;
+    loader.__dartWasmInflating = true;
+    loader.forceLoadScript = (url, onLoad) => {
+      inflateScript(url)
+        .then((resolved) => original(resolved, onLoad))
+        .catch(() => original(url, onLoad));
+    };
+  }
+
   // Kept for the lifetime of the sandbox: modules are captured long after the
   // sandbox connects, so this listener must outlive the handshake.
   const onMessage = (event) => {
@@ -231,6 +268,7 @@ export function createSandbox({
 
     if (data.action === 'connect') {
       clearTimeout(timer);
+      wrapScriptLoader(iframe.contentWindow);
       settle.resolve(data.port);
     } else if (data.action === 'module') {
       onModule?.(data.code);
@@ -249,7 +287,9 @@ export function createSandbox({
   iframe.srcdoc = [
     '<!DOCTYPE html>',
     '<html><head><meta charset="utf-8">',
-    onModule ? `<script>${MODULE_CAPTURE_HOOK}</script>` : '',
+    `<script>${fetchShimSource(baseUrl.href)}${sandboxScriptsGuardSource(baseUrl.href)}${
+      onModule ? MODULE_CAPTURE_HOOK : ''
+    }</script>`,
     `<script src="${sandboxUrl}" defer></script>`,
     '</head><body></body></html>',
   ].join('');

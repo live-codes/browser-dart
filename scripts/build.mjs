@@ -57,11 +57,15 @@ for (const file of OUTPUTS) {
   console.log(`  ${(size / 1024).toFixed(1).padStart(7)} KB  dist/${file}`);
 }
 
+// The assets may be stored plainly or gzipped, depending on sdk.lock.json.
 const missing = [];
 for (const variant of ['dart', 'flutter']) {
-  const probe = path.join(dist, variant, 'worker.wasm');
-  const info = await stat(probe).catch(() => null);
-  if (!info) missing.push(`dist/${variant}/`);
+  const found = await Promise.all(
+    ['worker.wasm', 'worker.wasm.gz'].map((name) =>
+      stat(path.join(dist, variant, name)).catch(() => null),
+    ),
+  );
+  if (!found.some(Boolean)) missing.push(`dist/${variant}/`);
 }
 if (missing.length > 0) {
   console.log(`\nassets not vendored yet: ${missing.join(', ')} — run: npm run fetch`);

@@ -116,22 +116,49 @@ It is not part of this package, so a Flutter pad is not fully self-contained the
 
 ## Assets, and how big this is
 
-The assets ship inside the package, laid out as `baseUrl` expects:
+The assets ship inside the package, laid out as `baseUrl` expects — **68.8 MB unpacked**, 42.9 MB as
+a tarball:
 
 ```
-dist/dart/        28 MB   Dart-only toolchain, console run mode
-dist/flutter/    225 MB   the same worker plus the precompiled Flutter framework
+dist/dart/       15.5 MB   Dart-only toolchain, console run mode
+dist/flutter/    50.0 MB   the same worker plus the precompiled Flutter framework
 ```
 
 Inside each: `worker.wasm` (DDC + analyzer + pub, dart2wasm), `sdk.tar` (the SDK, loaded into the
 worker's in-memory file system), `dart_sdk.js` and `dart_sdk.js.map` (precompiled SDK runtime),
 `ddc_module_loader.js`, `sandbox.js`, `dart_stack_trace_mapper.js`. Flutter adds `flutter_web.js`
-(123 MB — the framework, precompiled into DDC modules so only *your* code is recompiled), `flutter.js`
+— the framework, precompiled into DDC modules so only *your* code is recompiled — `flutter.js`
 and `assets/`.
 
-**253 MB unpacked is a lot.** A Dart pad pays only the 28 MB; Flutter pays all of it. If you serve
-both, treat Flutter as a second tier — lazy-load it, and warn before pulling 225 MB. Point `baseUrl`
-at a host you control, or at a CDN:
+A Dart pad pays only the 15.5 MB; Flutter pays all of it, so treat Flutter as a second tier —
+lazy-load it, and warn before pulling 50 MB. Point `baseUrl` at a host you control, or at a CDN:
+
+```js
+const dartpad = await createDartpad({
+  baseUrl: 'https://cdn.jsdelivr.net/npm/@live-codes/dart-wasm/dist/',
+  container: document.body,
+});
+```
+
+### Why some assets are gzipped
+
+Uncompressed these trees are 265 MB, and **jsDelivr refuses to serve a package over 150 MB** — it
+rejects the whole package, not just the offending file. So `worker.wasm`, `sdk.tar`, `flutter_web.js`
+(123 MB to 12.7 MB) and the two `.map` files ship as `.gz` and are inflated just before use:
+
+| asset | inflated by |
+| --- | --- |
+| `worker.wasm`, `sdk.tar` | a `fetch` shim in the worker. `worker.js` fetches the wasm with `compileStreaming`, and dart2wasm-land calls `globalThis.fetch` for the tarball, so one shim covers both |
+| `flutter_web.js` | an accessor over `$dartpadSandboxScripts`, the startup list `sandbox.js` loads with plain `<script>` tags, where no `fetch` shim can reach |
+| any module the DDC loader pulls later | a wrapper around `$dartLoader.forceLoadScript`, the one global every DDC script load goes through |
+| `dart_sdk.js.map`, `flutter_web.js.map` | nothing — they are inert until devtools asks, and devtools will not find them |
+
+Inflating happens in the page, not in the iframe, so the blob is cached for the lifetime of the
+`Dartpad` instance and recreating the sandbox does not re-inflate 123 MB.
+
+**No SDK file is modified.** Everything else stays uncompressed, which is the point: `dart_sdk.js`,
+`ddc_module_loader.js`, `sandbox.js` and `flutter.js` are loaded by paths nothing here can hook, so
+they are left exactly as the Dart team shipped them.
 
 ```js
 const dartpad = await createDartpad({
@@ -208,7 +235,8 @@ The target is web, so `dart:io` and anything needing a VM is out.
 
 **Chrome/Edge 130+**, or a browser with WebAssembly GC and the JS String builtins proposal — the
 worker feature-detects both and refuses to start without them. Safari and Firefox are not there yet.
-The runtime also needs a DOM: there is no Node build, because the sandbox is an iframe.
+The runtime also needs a DOM and `DecompressionStream` (Chrome 80+): there is no Node build, because
+the sandbox is an iframe.
 
 ## Relationship to LiveCodes
 
@@ -220,8 +248,8 @@ the assets and the protocol client.
 ## Development
 
 ```sh
-npm run fetch            # vendor both SDK asset trees into dist/ (253 MB)
-npm run fetch:dart       # just Dart (28 MB)
+npm run fetch            # vendor both SDK asset trees into dist/ (68.8 MB unpacked)
+npm run fetch:dart       # just Dart (15.5 MB)
 npm run build            # bundle src/ into dist/
 npm run serve            # http://localhost:8138/poc/
 npm run check-package    # what `npm publish` would actually contain

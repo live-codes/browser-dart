@@ -4,6 +4,14 @@
   "url": "https://pub.dev/api/archives/dartpad-0.0.9.tar.gz",
   "sha256": "3ac8de047c0c6b82ff63bc67f2fff2f579d6e4b6218028392b75b982a10c672f",
   "note": "Bump version + sha256 together from https://pub.dev/api/packages/dartpad (archive_sha256). 0.0.9 is the newest release that still bundles web/ assets; 0.0.10 removed them in favour of `dart run dartpad setup`. See doc/releases.md in the Dart SDK for the dartpad.zip CDN alternative.",
+  "gzip": [
+    "worker.wasm",
+    "sdk.tar",
+    "dart_sdk.js.map",
+    "flutter_web.js",
+    "flutter_web.js.map"
+  ],
+  "gzipNote": "Shipped gzipped so the unpacked package stays under jsDelivr's 150 MB limit. Each is inflated before use: worker.wasm and sdk.tar through a fetch shim in the worker, flutter_web.js through a wrapper around $dartLoader.forceLoadScript. The .map files are inert until devtools asks for them. Everything else stays raw, so nothing the SDK loads by other means has to change.",
   "variants": {
     "dart": {
       "source": "web/dart",
