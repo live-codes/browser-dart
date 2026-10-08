@@ -50,6 +50,38 @@ const SCRIPTS = {
 const CANVASKIT_BASE_URL =
   'https://www.gstatic.com/flutter-canvaskit/c3edad8766a937c49d66380894017cad401aab51/';
 
+/**
+ * `dartDevEmbedder.runMain` (in the SDK's `ddc_module_loader.js`) logs this before it starts,
+ * naming the entrypoint it is about to run. It is DartPad's own chatter rather than anything the
+ * pad printed, so it is filtered out.
+ */
+const RUN_MAIN_NOTICE = 'Starting application from main method in: ';
+
+/**
+ * Runs `fn` with that notice filtered out.
+ *
+ * The whole `console` object is swapped rather than just `console.log`, because a host may have
+ * replaced `console` with a proxy that forwards every call (LiveCodes does exactly that in its
+ * result page): writing to `.log` on such a proxy reaches the target's `log`, but the proxy still
+ * forwards the call itself.
+ */
+function withoutRunMainNotice(scope, fn) {
+  const real = scope.console;
+  const filtered = Object.create(real);
+  Object.defineProperty(filtered, 'log', {
+    value: (...args) => {
+      if (typeof args[0] === 'string' && args[0].startsWith(RUN_MAIN_NOTICE)) return undefined;
+      return real.log.apply(real, args);
+    },
+  });
+  scope.console = filtered;
+  try {
+    return fn();
+  } finally {
+    scope.console = real;
+  }
+}
+
 /** One load per engine and asset base, however many times `loadRuntime` is called. */
 const RUNTIMES = new Map();
 
@@ -105,7 +137,7 @@ export class Runtime {
   runMain(libraryUri, options = {}) {
     const embedder = this.#scope.dartDevEmbedder;
     if (!embedder) throw new Error('dart-wasm: the DDC runtime is not loaded');
-    return embedder.runMain(libraryUri, options);
+    return withoutRunMainNotice(this.#scope, () => embedder.runMain(libraryUri, options));
   }
 
   /**
@@ -120,10 +152,29 @@ export class Runtime {
     const loader = scope._flutter?.loader;
     if (!loader) throw new Error('dart-wasm: flutter.js is not loaded');
 
+    // The notice is printed from inside the entrypoint, so the filter has to travel into the blob
+    // rather than wrap `runApp` on this side.
     const entrypointUrl = scope.URL.createObjectURL(
-      new scope.Blob([`self.dartDevEmbedder.runMain(${JSON.stringify(libraryUri)}, {});`], {
-        type: 'application/javascript',
-      }),
+      new scope.Blob(
+        [
+          `(function () {
+            var real = self.console;
+            var filtered = Object.create(real);
+            Object.defineProperty(filtered, 'log', { value: function () {
+              if (typeof arguments[0] === 'string' &&
+                  arguments[0].indexOf(${JSON.stringify(RUN_MAIN_NOTICE)}) === 0) return;
+              return real.log.apply(real, arguments);
+            } });
+            self.console = filtered;
+            try {
+              self.dartDevEmbedder.runMain(${JSON.stringify(libraryUri)}, {});
+            } finally {
+              self.console = real;
+            }
+          })();`,
+        ],
+        { type: 'application/javascript' },
+      ),
     );
     try {
       const engineInitializer = await new Promise((resolve) => {
