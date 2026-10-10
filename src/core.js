@@ -155,9 +155,25 @@ export class Dartpad {
     return this.#compiler.pub(command, args);
   }
 
-  /** Write the pubspec and resolve it, if it is not already resolved. */
+  /** Write the pubspec and resolve it, if it has not been. */
   resolve(pubspec) {
     return this.#compiler.resolve(pubspec);
+  }
+
+  /**
+   * Format Dart source with the SDK's formatter.
+   *
+   * @param {string} code Dart source
+   * @param {object} [options] `file`, `tabSize`, `insertSpaces`
+   * @returns {Promise<string>} the formatted source
+   */
+  format(code, options) {
+    return this.#compiler.format(code, options);
+  }
+
+  /** Format a file already in the workspace. */
+  formatFile(path, options) {
+    return this.#compiler.formatFile(path, options);
   }
 
   /**

@@ -1,6 +1,6 @@
 {
   "name": "@live-codes/dart-wasm",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Run Dart and Flutter entirely in the browser, with no compilation server. The DartPad SDK — DDC, the analyzer and a subset of pub — behind a small promise-based API.",
   "keywords": [
     "dart",

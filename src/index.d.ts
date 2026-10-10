@@ -109,6 +109,15 @@ export interface CompileOptions {
   mode?: string;
 }
 
+export interface FormatOptions {
+  /** The filename the document is known by in the workspace. Defaults to `'main.dart'`. */
+  file?: string;
+  /** Indentation width. Defaults to `2`. */
+  tabSize?: number;
+  /** Indent with spaces rather than tabs. Defaults to `true`. */
+  insertSpaces?: boolean;
+}
+
 export interface CompilerOptions extends AssetOptions {
   /** `pub` and compiler chatter. */
   onLog?: (event: LogEvent) => void;
@@ -138,6 +147,12 @@ export declare class Compiler {
 
   /** Compile a file already in the workspace, for multi-file pads. */
   compileFile(path?: string, mode?: string): Promise<Program>;
+
+  /** Format Dart source with the SDK's formatter, returning the formatted source. */
+  format(code: string, options?: FormatOptions): Promise<string>;
+
+  /** Format a file already in the workspace, returning the formatted source. */
+  formatFile(path?: string, options?: Omit<FormatOptions, 'file'>): Promise<string>;
 
   dispose(): void;
 }
@@ -193,6 +208,12 @@ export declare class Dartpad {
   readFile(uri: string): Promise<string>;
   pub(command: string, args?: string[]): Promise<{ log: string }>;
   resolve(pubspec?: string): Promise<string>;
+
+  /** Format Dart source with the SDK's formatter, returning the formatted source. */
+  format(code: string, options?: FormatOptions): Promise<string>;
+
+  /** Format a file already in the workspace, returning the formatted source. */
+  formatFile(path?: string, options?: Omit<FormatOptions, 'file'>): Promise<string>;
 
   /** Compile and run a source string. */
   run(code: string, options?: CompileOptions): Promise<{ log: string; modules: CompiledModule[] }>;

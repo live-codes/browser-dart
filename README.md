@@ -76,6 +76,27 @@ emitted.
 
 Compile and run a file already in the workspace, for multi-file pads.
 
+### `dartpad.format(code, options?) → Promise<string>`
+
+Run the SDK's formatter over some Dart and return the formatted source:
+
+```js
+const pretty = await dartpad.format('void main(){print("hi");}');
+```
+
+There is no `format` method in the worker protocol — the formatter is reached through the language
+server, as an LSP `textDocument/formatting` request, so the first call also boots the analyzer. That
+happens once per instance.
+
+| option | default | meaning |
+| --- | --- | --- |
+| `file` | `'main.dart'` | the filename the document is known by in the workspace |
+| `tabSize` | `2` | indentation width |
+| `insertSpaces` | `true` | indent with spaces rather than tabs |
+
+`dartpad.formatFile(path?, options?)` formats a file already in the workspace, the way `runFile`
+runs one.
+
 ### `dartpad.writeFile(uri, text)` / `readFile(uri)` / `pub(command, args?)`
 
 The workspace. `pub` takes any of `get`, `add`, `remove`, `upgrade`, `downgrade`, `outdated`, `unpack`,
@@ -124,6 +145,7 @@ Boots the worker and returns a compiler. Options are `engine`, `baseUrl` and `on
 | --- | --- |
 | `compile(code, options?) → Promise<Program>` | takes `dependencies`, `pubspec`, `file`, `mode`, exactly as `dartpad.run` |
 | `compileFile(path?, mode?)` | compile a file already in the workspace |
+| `format(code, options?)` / `formatFile(path?, options?)` | run the SDK's formatter, as on `dartpad` |
 | `writeFile` / `readFile` / `pub` / `resolve` | the workspace |
 | `engine`, `modes`, `assetBaseUrl` | |
 | `dispose()` | terminates the worker |

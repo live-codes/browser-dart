@@ -16,7 +16,18 @@
 
 import { getDefaultAssetBase } from './base.js';
 import { assetUrlFor, buildPubspec, engineOf, parseSourceMap } from './engines.js';
+import { LanguageServer, applyTextEdits } from './lsp.js';
 import { RpcClient, startWorker } from './protocol.js';
+
+/**
+ * The worker hands out workspace folders as plain paths (`/workspace/pad_1`),
+ * but the analyzer speaks `file://` URIs, so they are rewritten. A folder that
+ * already carries a scheme is left alone.
+ */
+const fileUri = (path) => (path.includes('://') ? path : `file://${path}`);
+
+/** Whether a workspace path names the pubspec. */
+const isPubspec = (path) => String(path).split('/').pop() === 'pubspec.yaml';
 
 /**
  * What the worker will ask of a sandbox, and what we answer.
@@ -46,6 +57,7 @@ export class Compiler {
   #sandboxId;
   #pubspec;
   #onLog;
+  #languageServer = null;
   #capture = { modules: [], libraryUri: null, mode: null };
 
   constructor({ spec, assetBaseUrl, worker, blobUrl, rpc, workspaceId, workspaceFolder, onLog }) {
@@ -142,6 +154,7 @@ export class Compiler {
   }
 
   writeFile(uri, text) {
+    if (isPubspec(uri)) this.#invalidateLanguageServer();
     return this.#rpc.request('workspace/writeFileFromText', {
       workspaceId: this.#workspaceId,
       uri,
@@ -159,6 +172,9 @@ export class Compiler {
 
   /** Run any of `get`, `add`, `remove`, `upgrade`, `downgrade`, `outdated`, `unpack`. */
   pub(command, args = []) {
+    // Any `pub` command can rewrite the pubspec, and the analyzer is only correct against the
+    // package config it started with, so the language server is dropped and restarted on demand.
+    this.#invalidateLanguageServer();
     return this.#rpc.request('workspace/pub', {
       workspaceId: this.#workspaceId,
       uri: '.',
@@ -259,7 +275,83 @@ export class Compiler {
     };
   }
 
+  /**
+   * Format Dart source with the SDK's formatter.
+   *
+   * There is no `dart format` method in the worker protocol; the formatter is
+   * reached through the language server, as an LSP `textDocument/formatting`
+   * request, and the returned edits are applied here.
+   *
+   * @param {string} code Dart source
+   * @param {object} [options]
+   * @param {string} [options.file] entrypoint filename, `'main.dart'` by default
+   * @param {number} [options.tabSize] formatter indentation width, `2` by default
+   * @param {boolean} [options.insertSpaces] indent with spaces rather than tabs
+   * @returns {Promise<string>} the formatted source
+   */
+  async format(code, { file = 'main.dart', tabSize = 2, insertSpaces = true } = {}) {
+    const server = await this.#ensureLanguageServer();
+    const base = fileUri(this.#workspaceFolder);
+    const uri = new URL(file, base.endsWith('/') ? base : `${base}/`).href;
+
+    // The analyzer formats the document it has open, so the file has to exist in the workspace
+    // first — the same write `compile` does.
+    await this.writeFile(file, code);
+    server.didOpen(uri, code);
+    try {
+      const edits = await server.request('textDocument/formatting', {
+        textDocument: { uri },
+        options: { tabSize, insertSpaces },
+      });
+      return applyTextEdits(code, edits);
+    } finally {
+      server.didClose(uri);
+    }
+  }
+
+  /**
+   * Format a file already in the workspace, the way `compileFile` compiles one.
+   *
+   * @returns {Promise<string>} the formatted source
+   */
+  async formatFile(path = 'main.dart', options) {
+    return this.format(await this.readFile(path), { ...options, file: path });
+  }
+
+  /**
+   * The language server, started on first use.
+   *
+   * Formatting happens in a language server, which is rooted at the workspace
+   * folder, so the first `format` starts one and later calls reuse it.
+   */
+  #ensureLanguageServer() {
+    this.#languageServer ??= (async () => {
+      const server = await LanguageServer.start({
+        rpc: this.#rpc,
+        workspaceId: this.#workspaceId,
+      });
+      await server.initialize(fileUri(this.#workspaceFolder));
+      return server;
+    })();
+    return this.#languageServer;
+  }
+
+  /**
+   * Drop the language server so the next `format` starts a fresh one.
+   *
+   * The analyzer is bound to the package config it was started against. Resolving the pubspec
+   * reconfigures it, and a document first opened before that reconfiguration makes
+   * `textDocument/formatting` answer `null` from then on — so a changed pubspec means the server
+   * has to go. A compile with an unchanged pubspec leaves it alone, which is the common case.
+   */
+  #invalidateLanguageServer() {
+    const server = this.#languageServer;
+    this.#languageServer = null;
+    server?.then((instance) => instance.stop()).catch(() => {});
+  }
+
   dispose() {
+    this.#languageServer?.then((server) => server.stop()).catch(() => {});
     this.#worker.terminate();
     URL.revokeObjectURL(this.#blobUrl);
   }
