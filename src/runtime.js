@@ -26,7 +26,8 @@ function loadScript(doc, url) {
     script.src = url;
     script.async = false;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error(`dart-wasm: failed to load ${url}`));
+    script.onerror = () =>
+      reject(new Error(`dart-wasm: failed to load ${url}`));
     doc.head.append(script);
   });
 }
@@ -70,7 +71,8 @@ function withoutRunMainNotice(scope, fn) {
   const filtered = Object.create(real);
   Object.defineProperty(filtered, 'log', {
     value: (...args) => {
-      if (typeof args[0] === 'string' && args[0].startsWith(RUN_MAIN_NOTICE)) return undefined;
+      if (typeof args[0] === 'string' && args[0].startsWith(RUN_MAIN_NOTICE))
+        return undefined;
       return real.log.apply(real, args);
     },
   });
@@ -89,12 +91,14 @@ export class Runtime {
   #scope;
   #engine;
   #assetBaseUrl;
+  #hostElement;
   #generation = 0;
 
-  constructor({ scope, engine, assetBaseUrl }) {
+  constructor({ scope, engine, assetBaseUrl, hostElement = null }) {
     this.#scope = scope;
     this.#engine = engine;
     this.#assetBaseUrl = assetBaseUrl;
+    this.#hostElement = hostElement;
   }
 
   get engine() {
@@ -103,6 +107,11 @@ export class Runtime {
 
   get assetBaseUrl() {
     return new URL(this.#assetBaseUrl);
+  }
+
+  /** The element Flutter renders into, or `null` for the engine's own full-page host. */
+  get container() {
+    return this.#hostElement;
   }
 
   /** `dartDevEmbedder`, once the runtime is loaded. */
@@ -118,14 +127,18 @@ export class Runtime {
   async loadModule({ name, code }) {
     const scope = this.#scope;
     const loader = scope.$dartLoader;
-    if (!loader) throw new Error('dart-wasm: the DDC module loader is not loaded');
+    if (!loader)
+      throw new Error('dart-wasm: the DDC module loader is not loaded');
 
     // The `?n` suffix gives every generation its own script url, so a re-run maps stack traces
     // against the new source map rather than the one cached for the previous generation.
     const url = scope.URL.createObjectURL(
-      new scope.Blob([`${code}\n//# sourceURL=${name}.js?${this.#generation++}\n`], {
-        type: 'application/javascript',
-      }),
+      new scope.Blob(
+        [`${code}\n//# sourceURL=${name}.js?${this.#generation++}\n`],
+        {
+          type: 'application/javascript',
+        },
+      ),
     );
     loader.moduleIdToUrl.set(name, url);
     loader.urlToModuleId.set(url, name);
@@ -137,7 +150,9 @@ export class Runtime {
   runMain(libraryUri, options = {}) {
     const embedder = this.#scope.dartDevEmbedder;
     if (!embedder) throw new Error('dart-wasm: the DDC runtime is not loaded');
-    return withoutRunMainNotice(this.#scope, () => embedder.runMain(libraryUri, options));
+    return withoutRunMainNotice(this.#scope, () =>
+      embedder.runMain(libraryUri, options),
+    );
   }
 
   /**
@@ -183,6 +198,9 @@ export class Runtime {
       const appRunner = await engineInitializer.initializeEngine({
         canvasKitBaseUrl: CANVASKIT_BASE_URL,
         assetBase: this.#assetBaseUrl.href,
+        // Without a host the engine appends its `flutter-view` to `document.body` and takes the
+        // whole page; with one it embeds into that element instead.
+        ...(this.#hostElement ? { hostElement: this.#hostElement } : {}),
       });
       await appRunner.runApp();
     } finally {
@@ -193,7 +211,9 @@ export class Runtime {
   /** Register a compiled program's modules, then run its entrypoint. */
   async run(program) {
     if (!program?.libraryUri) {
-      throw new TypeError('dart-wasm: expected a compiled program, with a `libraryUri`');
+      throw new TypeError(
+        'dart-wasm: expected a compiled program, with a `libraryUri`',
+      );
     }
     for (const module of program.modules ?? []) {
       await this.loadModule(module);
@@ -212,6 +232,8 @@ export class Runtime {
  * @param {string | URL} [options.baseUrl] directory holding the `dart/` and `flutter/` trees
  * @param {string | URL} [options.assetBaseUrl] an already-resolved engine directory
  * @param {Document} [options.document] defaults to the current document
+ * @param {Element | string} [options.container] for `'flutter'`, the element the app renders into.
+ *   Defaults to the engine's own full-page host, which mounts into `document.body`.
  * @param {(event: { level: string, message: string }) => void} [options.onConsole] also mirror
  *   what the program prints
  * @param {(event: { message: string }) => void} [options.onError] also mirror uncaught errors
@@ -221,11 +243,15 @@ export function loadRuntime({
   engine = 'dart',
   baseUrl,
   assetBaseUrl,
+  container,
   document: doc = typeof document !== 'undefined' ? document : undefined,
   onConsole,
   onError,
 } = {}) {
-  if (!doc) return Promise.reject(new TypeError('dart-wasm: loadRuntime needs a document'));
+  if (!doc)
+    return Promise.reject(
+      new TypeError('dart-wasm: loadRuntime needs a document'),
+    );
 
   const spec = engineOf(engine);
   const resolved = assetBaseUrl
@@ -235,6 +261,16 @@ export function loadRuntime({
   const cacheKey = `${spec.id}@${resolved.href}`;
   const cached = RUNTIMES.get(cacheKey);
   if (cached) return cached;
+
+  const hostElement =
+    (container
+      ? typeof container === 'string'
+        ? doc.querySelector(container)
+        : container
+      : null) || document.body;
+  if (container && !hostElement) {
+    // return Promise.reject(new TypeError(`dart-wasm: container not found: ${String(container)}`));
+  }
 
   const pending = (async () => {
     const scope = doc.defaultView ?? globalThis;
@@ -265,14 +301,23 @@ export function loadRuntime({
     }
     if (typeof onError === 'function') {
       scope.addEventListener('error', (event) => {
-        onError({ message: String(event.error?.stack ?? event.message ?? event) });
+        onError({
+          message: String(event.error?.stack ?? event.message ?? event),
+        });
       });
       scope.addEventListener('unhandledrejection', (event) => {
-        onError({ message: String(event.reason?.stack ?? event.reason ?? event) });
+        onError({
+          message: String(event.reason?.stack ?? event.reason ?? event),
+        });
       });
     }
 
-    return new Runtime({ scope, engine: spec.id, assetBaseUrl: resolved });
+    return new Runtime({
+      scope,
+      engine: spec.id,
+      assetBaseUrl: resolved,
+      hostElement,
+    });
   })();
 
   RUNTIMES.set(cacheKey, pending);

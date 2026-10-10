@@ -192,6 +192,39 @@ export declare class Runner {
   dispose(): void;
 }
 
+export interface RuntimeOptions extends AssetOptions {
+  /** The document to load the runtime into. Defaults to the current document. */
+  document?: Document;
+  /**
+   * For `'flutter'`, the element the app renders into. Defaults to the engine's own full-page
+   * host, which mounts into `document.body`.
+   */
+  container?: Element | string;
+  /** Also mirror what the program prints. */
+  onConsole?: (event: ConsoleEvent) => void;
+  /** Also mirror uncaught errors. */
+  onError?: (event: ErrorEvent) => void;
+}
+
+export declare class Runtime {
+  readonly engine: EngineId;
+  readonly assetBaseUrl: URL;
+  /** The element Flutter renders into, or `null` for the engine's own full-page host. */
+  readonly container: Element | null;
+
+  /** `dartDevEmbedder`, once the runtime is loaded. */
+  readonly embedder: unknown;
+
+  /** Register one compiled module and evaluate it, in the order the compiler produced them. */
+  loadModule(module: CompiledModule): Promise<void>;
+
+  /** Call `main()` on an entrypoint that has already been loaded. */
+  runMain(libraryUri: string, options?: object): unknown;
+
+  /** Register a compiled program's modules, then run its entrypoint. */
+  run(program: Program): Promise<unknown>;
+}
+
 export interface CreateOptions extends AssetOptions, RunnerOptions {
   onModule?: (module: CompiledModule) => void;
 }
@@ -227,6 +260,7 @@ export declare class Dartpad {
 export declare function createCompiler(options?: CompilerOptions): Promise<Compiler>;
 export declare function createRunner(options?: RunnerOptions): Promise<Runner>;
 export declare function createDartpad(options?: CreateOptions): Promise<Dartpad>;
+export declare function loadRuntime(options?: RuntimeOptions): Promise<Runtime>;
 
 /** The pubspec a pad is compiled against. Flutter pads must depend on the SDK. */
 export declare function buildPubspec(engine: EngineId, dependencies?: Dependency[]): string;

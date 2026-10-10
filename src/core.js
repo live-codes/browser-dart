@@ -25,6 +25,12 @@ export { Runtime, loadRuntime } from './runtime.js';
 
 /** A pad renders into the sandbox, so Flutter needs somewhere visible to put it. */
 function containerFor(spec, container) {
+  if (typeof document === 'undefined') {
+    throw new TypeError(
+      'dart-wasm: `createDartpad` needs a document to mount the sandbox; in a Web Worker use `createCompiler` instead.',
+    );
+  }
+
   if (container) {
     const element =
       typeof container === 'string' ? document.querySelector(container) : container;

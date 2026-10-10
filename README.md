@@ -95,7 +95,8 @@ happens once per instance.
 | `insertSpaces` | `true` | indent with spaces rather than tabs |
 
 `dartpad.formatFile(path?, options?)` formats a file already in the workspace, the way `runFile`
-runs one.
+runs one. Both are also on `createCompiler`, which is the half to reach for in a Web Worker —
+`createDartpad` mounts a sandbox, so it needs a document.
 
 ### `dartpad.writeFile(uri, text)` / `readFile(uri)` / `pub(command, args?)`
 
@@ -172,6 +173,43 @@ one you already have.
 The modules load in the order the compiler produced them, then the entrypoint runs. This is
 deliberately not re-runnable on the same sandbox: `runMain` is not meant to be called twice, which is
 why `createDartpad` starts a fresh one per run.
+
+### `loadRuntime(options?) → Promise<Runtime>`
+
+The third way to run: load the engine's runtime straight into the page you are already in, with no
+sandbox iframe. `createRunner` needs a document and an iframe; `loadRuntime` needs only the document,
+which is what to use when the compiled code belongs in **your** page — the one with the host's DOM,
+scripts and styles around it.
+
+```js
+const runtime = await loadRuntime({ engine: 'dart', baseUrl });
+await runtime.run(program);
+```
+
+Options are `engine`, `baseUrl`, `assetBaseUrl`, `document`, `container`, `onConsole` and `onError`.
+The engine's scripts load into `document` (the current one by default), and calling it twice for the
+same engine and asset base returns the same runtime — one load per page.
+
+| member | meaning |
+| --- | --- |
+| `run(program)` | register the program's modules, then run its entrypoint |
+| `loadModule(module)` | register one compiled module |
+| `runMain(libraryUri)` | call `main()` on an entrypoint that is already loaded |
+| `engine`, `assetBaseUrl`, `container`, `embedder` | |
+
+There is no `dispose()`: the engine's scripts stay loaded for the life of the page.
+
+For `'flutter'`, `container` is the element the app renders into. Leave it out and the engine falls
+back to its full-page host: it mounts its `flutter-view` into `document.body` and fixes it over the
+whole viewport. Give it an element and the app embeds into that instead, sized to it:
+
+```js
+const runtime = await loadRuntime({
+  engine: 'flutter',
+  container: '#app',            // or an Element
+});
+await runtime.run(program);
+```
 
 ## Flutter
 
